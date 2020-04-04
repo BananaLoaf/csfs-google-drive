@@ -126,6 +126,9 @@ class DriveClient:
             self.credentials = credentials
             return True
 
+    def update_root_id(self):
+        AF.ROOT_ID = self.get_by_id(id=AF.ROOT_ID)["id"]
+
     # @is_connected
     # @lock
     def changes(self, page_token: str, fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> dict:

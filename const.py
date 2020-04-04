@@ -17,8 +17,8 @@ class FF:  # File System Fields
 class DF:  # Database Fields
     ID = "id"
     PARENT_ID = "parent_id"
-    PATH = "path"
-    FILENAME = "filename"
+    DIRNAME = "dirname"
+    BASENAME = "basename"
     FILE_SIZE = "file_size"
     ATIME = "atime"
     CTIME = "ctime"
@@ -28,8 +28,8 @@ class DF:  # Database Fields
     MD5 = "md5"
     FILES_HEADERS = {ID: "TEXT NOT NULL UNIQUE",
                      PARENT_ID: "TEXT",
-                     PATH: "TEXT",
-                     FILENAME: "TEXT NOT NULL",
+                     DIRNAME: "TEXT",
+                     BASENAME: "TEXT NOT NULL",
                      FILE_SIZE: "INTEGER NOT NULL",
                      ATIME: "INTEGER NOT NULL",
                      CTIME: "INTEGER NOT NULL",
@@ -41,7 +41,7 @@ class DF:  # Database Fields
 
 class AF:  # Drive API Fields
     DEFAULT_FIELDS = ("id", "parents", "name", "size", "viewedByMeTime", "createdTime", "modifiedTime", "mimeType", "trashed", "md5Checksum")
-    ROOT_ID = "0APDtiVlzAprkUk9PVA"
+    ROOT_ID = "root"
     FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
     GOOGLE_APP_MIME_TYPES = [

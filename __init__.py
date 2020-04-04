@@ -5,12 +5,12 @@ from pathlib import Path
 import keyring
 
 from CloudStorageFileSystem.utils.servicesupervisor import ServiceSupervisor, ThreadHandler
-from CloudStorageFileSystem.utils.filesystem import FileSystem
+from CloudStorageFileSystem.utils.operations import CustomOperations
 from CloudStorageFileSystem.utils.exceptions import *
 from .client import DriveClient
 from .database import DriveDatabase
 from .filesystem import DriveFileSystem
-from .const import CF, FF
+from .const import CF, FF, AF
 
 
 class GoogleDriveSS(ServiceSupervisor):
@@ -61,7 +61,7 @@ class GoogleDriveSS(ServiceSupervisor):
         credentials = self.client.auth()
         keyring.set_password(self.SERVICE_NAME, self.profile_name, credentials)
 
-    def _start(self) -> Tuple[FileSystem, Path, List[ThreadHandler]]:
+    def _start(self) -> Tuple[CustomOperations, Path, List[ThreadHandler]]:
         # Load credentials
         credentials = keyring.get_password(self.SERVICE_NAME, self.profile_name)
         if credentials is not None:
@@ -71,6 +71,7 @@ class GoogleDriveSS(ServiceSupervisor):
         else:
             raise ProfileStartingError("No credentials found, invalid profile")
 
+        self.client.update_root_id()
         db = DriveDatabase(self.profile_path.joinpath("data.db"))
 
         fs = DriveFileSystem(db=db, client=self.client)
