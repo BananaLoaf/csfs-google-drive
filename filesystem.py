@@ -21,6 +21,8 @@ def google_datetime_to_timestamp(datetime_str: str) -> int:
 
 
 class DriveFileSystem(CustomOperations):
+    _statfs: dict
+
     def __init__(self, db: DriveDatabase, client: DriveClient):
         self.db = db
         self.client = client
@@ -52,17 +54,17 @@ class DriveFileSystem(CustomOperations):
         return st
 
     def drive2db(self, file: DriveFile) -> DatabaseFile:
-        # path
+        # dirname
         try:
             db_file = self.db.get_file(**{DF.ID: file["parents"][0]})
             if db_file[DF.DIRNAME]:
-                path = str(Path(db_file[DF.DIRNAME], db_file[DF.BASENAME]))
+                dirname = str(Path(db_file[DF.DIRNAME], db_file[DF.BASENAME]))
             else:
-                path = db_file[DF.BASENAME]
+                dirname = db_file[DF.BASENAME]
         except KeyError:
-            path = None
+            dirname = None
         except TypeError:
-            path = "/"
+            dirname = "/"
 
         # parent_id
         try:
@@ -101,7 +103,7 @@ class DriveFileSystem(CustomOperations):
         db_file = DatabaseFile.from_kwargs(**{
             DF.ID: file["id"],
             DF.PARENT_ID: file["parents"][0],
-            DF.DIRNAME: path,
+            DF.DIRNAME: dirname,
             DF.BASENAME: file["name"],
             DF.FILE_SIZE: file["size"],
             DF.ATIME: file["viewedByMeTime"],
@@ -148,17 +150,19 @@ class DriveFileSystem(CustomOperations):
 
         # Add folder files
         while len(folders_drive_files) > 0:
-            # Filter drive files with added parents
-            next_drive_files = list(filter(
+            # Add drive files with added parents and add them to the list of added parents
+            folder_drive_files_next = list(filter(
                 lambda drive_file: drive_file["parents"][0] in added_ids,
                 folders_drive_files
             ))
-            folders_drive_files = [drive_file for drive_file in folders_drive_files if
-                                   drive_file not in next_drive_files]
+            self.db.new_files([self.drive2db(drive_file) for drive_file in folder_drive_files_next])
+            added_ids += [drive_file[DF.ID] for drive_file in folder_drive_files_next]
 
-            # Add them to db and add them to the list of added parents
-            self.db.new_files([self.drive2db(drive_file) for drive_file in next_drive_files])
-            added_ids += [drive_file[DF.ID] for drive_file in next_drive_files]
+            # Filter not added files
+            folders_drive_files = list(filter(
+                lambda drive_file: drive_file not in folder_drive_files_next,
+                folders_drive_files
+            ))
 
         # Add file files
         self.db.new_files([self.drive2db(drive_file) for drive_file in file_drive_files])
@@ -201,17 +205,44 @@ class DriveFileSystem(CustomOperations):
         except ConnectionError as err:
             LOGGER.error(f"[{FS_PROC_NAME}] {err}")
 
+    def _remove(self, path: str) -> str:
+        db_file = self.get_db_file(path=path)
+        if db_file[DF.TRASHED]:
+            self.client.untrash_file(id=db_file[DF.ID])
+        else:
+            self.client.trash_file(id=db_file[DF.ID])
+        return db_file[DF.ID]
+
     ################################################################
     # FS ops
     def init(self, path: str):
         """Called on filesystem initialization. Path is always /"""
         LOGGER.info(f"[{FS_PROC_NAME}] Initiating filesystem")
+
+        drive_info = self.client.about()
+        total_space = int(drive_info["storageQuota"]["limit"])
+        used_space = int(drive_info["storageQuota"]["usage"])
+        self._statfs = {
+            "f_bsize": 512,  # Filesystem block size
+            "f_frsize": 512,  # Fragment size
+            "f_blocks": int(total_space / 512),  # Size of fs in f_frsize units
+            "f_bfree": int((total_space - used_space) / 512),  # Number of free blocks
+            "f_bavail": int((total_space - used_space) / 512),  # Number of free blocks for unprivileged users
+            "f_files": 0,  # Number of inodes
+            "f_ffree": 0,  # Number of free inodes
+            "f_favail": 0,  # Number of free inodes for unprivileged users
+            # "f_fsid": 0,  # Filesystem ID
+            # "f_flag": 0,  # Mount flags
+            # "f_namemax": 0  # Maximum filename length
+        }
+
         self.recursive_listdir(path)
+
         LOGGER.info(f"[{FS_PROC_NAME}] Filesystem initiated successfully")
 
     def destroy(self, path: str):
         """Called on filesystem destruction. Path is always /"""
-        pass
+        LOGGER.info(f"[{FS_PROC_NAME}] Destroying filesystem")
 
     def statfs(self, path: str) -> dict:
         """
@@ -221,7 +252,9 @@ class DriveFileSystem(CustomOperations):
         On Mac OS X f_bsize and f_frsize must be a power of 2
         (minimum 512).
         """
-        return {}
+
+        LOGGER.debug(f"[{FS_PROC_NAME}] Statfs '{path}'")
+        return self._statfs
 
     # def ioctl(self, path, cmd, arg, fip, flags, data):
     #     raise FuseOSError(errno.ENOTTY)
@@ -244,6 +277,7 @@ class DriveFileSystem(CustomOperations):
 
         db_file = self.get_db_file(path)
         if db_file is not None:
+            # LOGGER.debug(f"[{FS_PROC_NAME}] Getting attributes of '{path}'")
             return self.db_file2stat(db_file)
 
         else:
@@ -258,6 +292,7 @@ class DriveFileSystem(CustomOperations):
 
         db_file = self.get_db_file(path)
         if db_file is not None:
+            LOGGER.info(f"[{FS_PROC_NAME}] Listing '{path}'")
             db_files = self.db.get_files(**{DF.PARENT_ID: db_file[DF.ID], DF.TRASHED: self.trashed})
 
             for db_file in db_files:
@@ -268,16 +303,57 @@ class DriveFileSystem(CustomOperations):
             raise FuseOSError(errno.ENOENT)
 
     def rename(self, old: str, new: str):
-        raise FuseOSError(errno.EROFS)
+        old_db_file = self.get_db_file(path=old)
+
+        old = Path(old)
+        new = Path(new)
+        # Renaming
+        if old.parent == new.parent:
+            LOGGER.info(f"[{FS_PROC_NAME}] Renaming '{old}' into '{new}'")
+
+            drive_file = self.client.rename_file(id=old_db_file[DF.ID], name=new.name)
+
+            new_db_file = self.drive2db(drive_file)
+            self.db.new_file(new_db_file)
+
+        # Moving
+        else:
+            LOGGER.info(f"[{FS_PROC_NAME}] Moving '{old}' to '{new}'")
+
+            old_parent_id = self.get_db_file(path=str(old.parent))[DF.ID]
+            new_parent_id = self.get_db_file(path=str(new.parent))[DF.ID]
+
+            drive_file = self.client.move_file(file_id=old_db_file[DF.ID],
+                                               old_parent_id=old_parent_id, new_parent_id=new_parent_id)
+            new_db_file = self.drive2db(drive_file)
+            self.db.new_file(new_db_file)
 
     def mkdir(self, path: str, mode):
-        raise FuseOSError(errno.EROFS)
+        self.try2ignore(path)
+
+        LOGGER.info(f"[{FS_PROC_NAME}] Creating directory '{path}'")
+
+        path = Path(path)
+        parent_path = path.parent
+
+        parent_id = self.get_db_file(path=str(parent_path))[DF.ID]
+        drive_file = self.client.create_folder(parent_id=parent_id, name=path.name)
+
+        new_db_file = self.drive2db(drive_file)
+        self.db.new_file(new_db_file)
 
     def rmdir(self, path: str):
-        raise FuseOSError(errno.EROFS)
+        LOGGER.info(f"[{FS_PROC_NAME}] Removing directory '{path}'")
+
+        id = self._remove(path)
+        # self.db.delete_file_children(id=id)
+        self.db.delete_file(id=id)
 
     def unlink(self, path: str):
-        raise FuseOSError(errno.EROFS)
+        LOGGER.info(f"[{FS_PROC_NAME}] Removing file '{path}'")
+
+        id = self._remove(path)
+        self.db.delete_file(id=id)
 
     ################################################################
     # Other ops

@@ -129,6 +129,10 @@ class DriveClient:
     def update_root_id(self):
         AF.ROOT_ID = self.get_by_id(id=AF.ROOT_ID)["id"]
 
+    def about(self):
+        response = self.service.about().get(fields="user(*),storageQuota(*),maxImportSizes,maxUploadSize").execute(num_retries=1)
+        return response
+
     # @is_connected
     # @lock
     def changes(self, page_token: str, fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> dict:
