@@ -38,11 +38,9 @@ class DriveFileSystem(CustomOperations):
 
     def get_db_file(self, path: str) -> Optional[DatabaseFile]:
         if path == "/":
-            db_file = self.db.get_file(**{DF.BASENAME: path})
+            db_file = self.db.get_file(**{DF.PATH: path})
         else:
-            path = Path(path)
-            db_file = self.db.get_file(**{DF.DIRNAME: str(path.parent), DF.BASENAME: str(path.name), DF.TRASHED: self.trashed})
-
+            db_file = self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
         return db_file
 
     def db_file2stat(self, db_file: DatabaseFile) -> Stat:
@@ -53,65 +51,35 @@ class DriveFileSystem(CustomOperations):
                   size=0 if db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE else db_file[DF.FILE_SIZE])  # or 4096
         return st
 
-    def drive2db(self, file: DriveFile) -> DatabaseFile:
-        # dirname
-        try:
-            db_file = self.db.get_file(**{DF.ID: file["parents"][0]})
-            if db_file[DF.DIRNAME]:
-                dirname = str(Path(db_file[DF.DIRNAME], db_file[DF.BASENAME]))
-            else:
-                dirname = db_file[DF.BASENAME]
-        except KeyError:
-            dirname = None
-        except TypeError:
-            dirname = "/"
+    def drive_file2db_file(self, file: DriveFile) -> DatabaseFile:
+        id = file["id"]
+        parent_id = file["parents"][0] if "parents" in file.keys() else None
 
-        # parent_id
-        try:
-            file["parents"][0]
-        except KeyError:
-            file["parents"] = [None]
-
-        # name
         if file["id"] == AF.ROOT_ID:
-            file["name"] = "/"
+            path = "/"
+        else:
+            parent_db_file = self.db.get_file(**{DF.ID: parent_id, DF.TRASHED: self.trashed})
+            path = str(Path(parent_db_file[DF.PATH], file["name"]))
 
-        # file_size
-        try:
-            file["size"]
-        except KeyError:
-            file["size"] = 0
-
-        # atime UTC
-        try:
-            file["viewedByMeTime"] = file["viewedByMeTime"] if isinstance(file["viewedByMeTime"], int) else google_datetime_to_timestamp(file["viewedByMeTime"])
-        except KeyError:
-            file["viewedByMeTime"] = 0
-
-        # ctime UTC
-        file["createdTime"] = file["createdTime"] if isinstance(file["createdTime"], int) else google_datetime_to_timestamp(file["createdTime"])
-
-        # mtime UTC
-        file["modifiedTime"] = file["modifiedTime"] if isinstance(file["modifiedTime"], int) else google_datetime_to_timestamp(file["modifiedTime"])
-
-        # md5
-        try:
-            file["md5Checksum"]
-        except KeyError:
-            file["md5Checksum"] = None
+        file_size = file["size"] if "size" in file.keys() else 0
+        atime = google_datetime_to_timestamp(file["viewedByMeTime"]) if "viewedByMeTime" in file.keys() else 0
+        ctime = google_datetime_to_timestamp(file["createdTime"])
+        mtime = google_datetime_to_timestamp(file["modifiedTime"])
+        mime_type = file["mimeType"]
+        trashed = file["trashed"]
+        md5 = file["md5Checksum"] if "md5Checksum" in file.keys() else None
 
         db_file = DatabaseFile.from_kwargs(**{
-            DF.ID: file["id"],
-            DF.PARENT_ID: file["parents"][0],
-            DF.DIRNAME: dirname,
-            DF.BASENAME: file["name"],
-            DF.FILE_SIZE: file["size"],
-            DF.ATIME: file["viewedByMeTime"],
-            DF.CTIME: file["createdTime"],
-            DF.MTIME: file["modifiedTime"],
-            DF.MIME_TYPE: file["mimeType"],
-            DF.TRASHED: file["trashed"],
-            DF.MD5: file["md5Checksum"]
+            DF.ID: id,
+            DF.PARENT_ID: parent_id,
+            DF.PATH: path,
+            DF.FILE_SIZE: file_size,
+            DF.ATIME: atime,
+            DF.CTIME: ctime,
+            DF.MTIME: mtime,
+            DF.MIME_TYPE: mime_type,
+            DF.TRASHED: trashed,
+            DF.MD5: md5
         })
         return db_file
 
@@ -140,7 +108,7 @@ class DriveFileSystem(CustomOperations):
         drive_files = self.exec_query(q=q)
 
         # Get parent dir and add to db
-        db_file = self.drive2db(self.client.get_by_id(id=AF.ROOT_ID))
+        db_file = self.drive_file2db_file(self.client.get_by_id(id=AF.ROOT_ID))
         self.db.new_file(db_file)
         added_ids = [db_file[DF.ID]]
 
@@ -155,7 +123,7 @@ class DriveFileSystem(CustomOperations):
                 lambda drive_file: drive_file["parents"][0] in added_ids,
                 folders_drive_files
             ))
-            self.db.new_files([self.drive2db(drive_file) for drive_file in folder_drive_files_next])
+            self.db.new_files([self.drive_file2db_file(drive_file) for drive_file in folder_drive_files_next])
             added_ids += [drive_file[DF.ID] for drive_file in folder_drive_files_next]
 
             # Filter not added files
@@ -165,17 +133,17 @@ class DriveFileSystem(CustomOperations):
             ))
 
         # Add file files
-        self.db.new_files([self.drive2db(drive_file) for drive_file in file_drive_files])
+        self.db.new_files([self.drive_file2db_file(drive_file) for drive_file in file_drive_files])
 
     def _recursive_list_any(self, parent_id: str):
         q = f"'{parent_id}' in parents and trashed={str(self.trashed).lower()}"
         drive_files = self.exec_query(q=q)
 
         drive_file = self.client.get_by_id(id=parent_id)
-        self.db.new_file(self.drive2db(drive_file))
+        self.db.new_file(self.drive_file2db_file(drive_file))
 
         while len(drive_files) > 0:
-            db_files = [self.drive2db(drive_file) for drive_file in drive_files]
+            db_files = [self.drive_file2db_file(drive_file) for drive_file in drive_files]
             self.db.new_files(db_files)
 
             # Filter folders and extract their ids
@@ -199,14 +167,14 @@ class DriveFileSystem(CustomOperations):
             drive_files = self.exec_query(q=q)
             drive_files.append(self.client.get_by_id(id=parent_id))
 
-            db_files = [self.drive2db(drive_file) for drive_file in drive_files]
+            db_files = [self.drive_file2db_file(drive_file) for drive_file in drive_files]
             self.db.new_files(db_files)
 
         except ConnectionError as err:
             LOGGER.error(f"[{FS_PROC_NAME}] {err}")
 
     def _remove(self, path: str) -> str:
-        db_file = self.get_db_file(path=path)
+        db_file = self.get_db_file(path)
         if db_file[DF.TRASHED]:
             self.client.untrash_file(id=db_file[DF.ID])
         else:
@@ -296,7 +264,7 @@ class DriveFileSystem(CustomOperations):
             db_files = self.db.get_files(**{DF.PARENT_ID: db_file[DF.ID], DF.TRASHED: self.trashed})
 
             for db_file in db_files:
-                yield db_file[DF.BASENAME], self.db_file2stat(db_file), 0
+                yield Path(db_file[DF.PATH]).name, self.db_file2stat(db_file), 0
 
         else:
             LOGGER.error(f"[{FS_PROC_NAME}] Unable to list '{path}', does not exist")
@@ -313,7 +281,7 @@ class DriveFileSystem(CustomOperations):
 
             drive_file = self.client.rename_file(id=old_db_file[DF.ID], name=new.name)
 
-            new_db_file = self.drive2db(drive_file)
+            new_db_file = self.drive_file2db_file(drive_file)
             self.db.new_file(new_db_file)
 
         # Moving
@@ -325,7 +293,7 @@ class DriveFileSystem(CustomOperations):
 
             drive_file = self.client.move_file(file_id=old_db_file[DF.ID],
                                                old_parent_id=old_parent_id, new_parent_id=new_parent_id)
-            new_db_file = self.drive2db(drive_file)
+            new_db_file = self.drive_file2db_file(drive_file)
             self.db.new_file(new_db_file)
 
     def mkdir(self, path: str, mode):
@@ -339,7 +307,7 @@ class DriveFileSystem(CustomOperations):
         parent_id = self.get_db_file(path=str(parent_path))[DF.ID]
         drive_file = self.client.create_folder(parent_id=parent_id, name=path.name)
 
-        new_db_file = self.drive2db(drive_file)
+        new_db_file = self.drive_file2db_file(drive_file)
         self.db.new_file(new_db_file)
 
     def rmdir(self, path: str):

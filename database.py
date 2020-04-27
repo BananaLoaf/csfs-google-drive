@@ -15,6 +15,9 @@ class DriveDatabase(Database):  # TODO add trigger for new files
         super().__init__(*args, **kwargs)
 
         self.create_table(self.files_table, headers=DF.FILES_HEADERS, reset=True)
+        self._execute(f"CREATE INDEX IF NOT EXISTS {DF.ID}_index ON '{self.files_table}' ({DF.ID})")
+        self._execute(f"CREATE INDEX IF NOT EXISTS {DF.PARENT_ID}_index ON '{self.files_table}' ({DF.PARENT_ID})")
+        self._execute(f"CREATE INDEX IF NOT EXISTS {DF.PATH}_index ON '{self.files_table}' ({DF.PATH})")
 
     def new_file(self, file: DatabaseFile):
         query = f"INSERT OR REPLACE INTO '{self.files_table}' " \

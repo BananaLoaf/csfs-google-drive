@@ -62,6 +62,9 @@ class DriveFile:
     def __repr__(self):
         return str(self._data)
 
+    def keys(self):
+        return list(self._data.keys())
+
 
 class DriveClient:
     credentials: Credentials
