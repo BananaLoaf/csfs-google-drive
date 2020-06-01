@@ -4,7 +4,7 @@ from typing import Tuple, List
 from pathlib import Path
 import keyring
 
-from CloudStorageFileSystem.utils.servicesupervisor import ServiceSupervisor, ThreadHandler
+from CloudStorageFileSystem.utils.profile import Profile, ThreadHandler
 from CloudStorageFileSystem.utils.operations import CustomOperations
 from CloudStorageFileSystem.utils.exceptions import *
 from .client import DriveClient
@@ -13,7 +13,7 @@ from .filesystem import DriveFileSystem
 from .const import CF, FF, AF
 
 
-class GoogleDriveSS(ServiceSupervisor):
+class GoogleDriveProfile(Profile):
     SERVICE_NAME: str = "google-drive"
     SERVICE_LABEL: str = "Gooogle Drive"
 
@@ -57,7 +57,7 @@ class GoogleDriveSS(ServiceSupervisor):
             }
         }
 
-    def _create_profile(self):
+    def _create(self):
         credentials = self.client.auth()
         keyring.set_password(self.SERVICE_NAME, self.profile_name, credentials)
 
