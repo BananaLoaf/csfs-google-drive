@@ -59,11 +59,14 @@ class GoogleDriveProfile(Profile):
 
     def _create(self):
         credentials = self.client.auth()
-        keyring.set_password(self.SERVICE_NAME, self.profile_name, credentials)
+        keyring.set_password(self.SERVICE_NAME, self.PROFILE_NAME, credentials)
+
+    def _remove(self):
+        keyring.delete_password(self.SERVICE_NAME, self.PROFILE_NAME)
 
     def _start(self) -> Tuple[CustomOperations, Path, List[ThreadHandler]]:
         # Load credentials
-        credentials = keyring.get_password(self.SERVICE_NAME, self.profile_name)
+        credentials = keyring.get_password(self.SERVICE_NAME, self.PROFILE_NAME)
         if credentials is not None:
             res = self.client.load_credentials(json.loads(credentials))
             if not res:
