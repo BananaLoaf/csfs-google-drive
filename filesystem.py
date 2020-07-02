@@ -23,10 +23,10 @@ def google_datetime_to_timestamp(datetime_str: str) -> int:
 class DriveFileSystem(CustomOperations):
     _statfs: dict
 
-    def __init__(self, db: DriveDatabase, client: DriveClient):
+    def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool):
         self.db = db
         self.client = client
-        self.trashed = False
+        self.trashed = trash
 
     ################################################################
     # Helpers
@@ -43,7 +43,7 @@ class DriveFileSystem(CustomOperations):
             db_file = self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
         return db_file
 
-    def db_file2stat(self, db_file: DatabaseFile) -> Stat:
+    def db2stat(self, db_file: DatabaseFile) -> Stat:
         st = Stat(is_dir=db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE,
                   atime=db_file[DF.ATIME] - time.timezone,
                   mtime=db_file[DF.MTIME] - time.timezone,
@@ -51,7 +51,7 @@ class DriveFileSystem(CustomOperations):
                   size=0 if db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE else db_file[DF.FILE_SIZE])  # or 4096
         return st
 
-    def drive_file2db_file(self, file: DriveFile) -> DatabaseFile:
+    def drive2db(self, file: DriveFile) -> DatabaseFile:
         id = file["id"]
         parent_id = file["parents"][0] if "parents" in file.keys() else None
 
@@ -106,9 +106,10 @@ class DriveFileSystem(CustomOperations):
     def _recursive_list_root(self):
         q = f"'me' in owners and trashed={str(self.trashed).lower()}"
         drive_files = self.exec_query(q=q)
+        drive_files = list(filter(lambda drive_file: "parents" in drive_file.keys(), drive_files))  # No orphans allowed
 
         # Get parent dir and add to db
-        db_file = self.drive_file2db_file(self.client.get_by_id(id=AF.ROOT_ID))
+        db_file = self.drive2db(self.client.get_by_id(id=AF.ROOT_ID))
         self.db.new_file(db_file)
         added_ids = [db_file[DF.ID]]
 
@@ -123,7 +124,7 @@ class DriveFileSystem(CustomOperations):
                 lambda drive_file: drive_file["parents"][0] in added_ids,
                 folders_drive_files
             ))
-            self.db.new_files([self.drive_file2db_file(drive_file) for drive_file in folder_drive_files_next])
+            self.db.new_files([self.drive2db(drive_file) for drive_file in folder_drive_files_next])
             added_ids += [drive_file[DF.ID] for drive_file in folder_drive_files_next]
 
             # Filter not added files
@@ -133,17 +134,17 @@ class DriveFileSystem(CustomOperations):
             ))
 
         # Add file files
-        self.db.new_files([self.drive_file2db_file(drive_file) for drive_file in file_drive_files])
+        self.db.new_files([self.drive2db(drive_file) for drive_file in file_drive_files])
 
     def _recursive_list_any(self, parent_id: str):
         q = f"'{parent_id}' in parents and trashed={str(self.trashed).lower()}"
         drive_files = self.exec_query(q=q)
 
         drive_file = self.client.get_by_id(id=parent_id)
-        self.db.new_file(self.drive_file2db_file(drive_file))
+        self.db.new_file(self.drive2db(drive_file))
 
         while len(drive_files) > 0:
-            db_files = [self.drive_file2db_file(drive_file) for drive_file in drive_files]
+            db_files = [self.drive2db(drive_file) for drive_file in drive_files]
             self.db.new_files(db_files)
 
             # Filter folders and extract their ids
@@ -167,7 +168,7 @@ class DriveFileSystem(CustomOperations):
             drive_files = self.exec_query(q=q)
             drive_files.append(self.client.get_by_id(id=parent_id))
 
-            db_files = [self.drive_file2db_file(drive_file) for drive_file in drive_files]
+            db_files = [self.drive2db(drive_file) for drive_file in drive_files]
             self.db.new_files(db_files)
 
         except ConnectionError as err:
@@ -246,7 +247,7 @@ class DriveFileSystem(CustomOperations):
         db_file = self.get_db_file(path)
         if db_file is not None:
             # LOGGER.debug(f"[{FS_PROC_NAME}] Getting attributes of '{path}'")
-            return self.db_file2stat(db_file)
+            return self.db2stat(db_file)
 
         else:
             LOGGER.error(f"[{FS_PROC_NAME}] '{path}' does not exist")
@@ -264,7 +265,7 @@ class DriveFileSystem(CustomOperations):
             db_files = self.db.get_files(**{DF.PARENT_ID: db_file[DF.ID], DF.TRASHED: self.trashed})
 
             for db_file in db_files:
-                yield Path(db_file[DF.PATH]).name, self.db_file2stat(db_file), 0
+                yield Path(db_file[DF.PATH]).name, self.db2stat(db_file), 0
 
         else:
             LOGGER.error(f"[{FS_PROC_NAME}] Unable to list '{path}', does not exist")
@@ -280,8 +281,7 @@ class DriveFileSystem(CustomOperations):
             LOGGER.info(f"[{FS_PROC_NAME}] Renaming '{old}' into '{new}'")
 
             drive_file = self.client.rename_file(id=old_db_file[DF.ID], name=new.name)
-
-            new_db_file = self.drive_file2db_file(drive_file)
+            new_db_file = self.drive2db(drive_file)
             self.db.new_file(new_db_file)
 
         # Moving
@@ -293,7 +293,7 @@ class DriveFileSystem(CustomOperations):
 
             drive_file = self.client.move_file(file_id=old_db_file[DF.ID],
                                                old_parent_id=old_parent_id, new_parent_id=new_parent_id)
-            new_db_file = self.drive_file2db_file(drive_file)
+            new_db_file = self.drive2db(drive_file)
             self.db.new_file(new_db_file)
 
     def mkdir(self, path: str, mode):
@@ -307,7 +307,7 @@ class DriveFileSystem(CustomOperations):
         parent_id = self.get_db_file(path=str(parent_path))[DF.ID]
         drive_file = self.client.create_folder(parent_id=parent_id, name=path.name)
 
-        new_db_file = self.drive_file2db_file(drive_file)
+        new_db_file = self.drive2db(drive_file)
         self.db.new_file(new_db_file)
 
     def rmdir(self, path: str):

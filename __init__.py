@@ -76,8 +76,7 @@ class GoogleDriveProfile(Profile):
 
         self.client.update_root_id()
         db = DriveDatabase(self.profile_path.joinpath("data.db"))
+        fs = DriveFileSystem(db=db, client=self.client, trash=self.config[CF.MOUNT_SECTION][CF.TRASH])
 
-        fs = DriveFileSystem(db=db, client=self.client)
         mountpoint = Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT])
-
         return fs, mountpoint, []
