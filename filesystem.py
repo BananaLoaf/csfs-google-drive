@@ -2,11 +2,14 @@ import errno
 from typing import Union, Tuple, List, Optional
 import time
 from datetime import datetime
+import hashlib
+import threading
+import stat
 
 from refuse.high import FuseOSError
 from pathlib import Path
 
-from CloudStorageFileSystem.utils.operations import CustomOperations, Stat
+from CloudStorageFileSystem.utils.operations import CustomOperations, Stat, flag2mode
 from CloudStorageFileSystem.logger import LOGGER
 from .client import DriveClient, DriveFile
 from .database import DriveDatabase, DatabaseFile
@@ -23,10 +26,14 @@ def google_datetime_to_timestamp(datetime_str: str) -> int:
 class DriveFileSystem(CustomOperations):
     _statfs: dict
 
-    def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool):
+    download_lock = threading.Lock()
+
+    def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool, cache_path: Path):
         self.db = db
         self.client = client
         self.trashed = trash
+
+        self.cache_path = cache_path
 
     ################################################################
     # Helpers
@@ -183,6 +190,46 @@ class DriveFileSystem(CustomOperations):
         return db_file[DF.ID]
 
     ################################################################
+    # Cache handling
+    def is_cached(self, md5: str):
+        return self.cache_path.joinpath(md5).exists()
+
+    def check_filesize(self, md5: str, dest_filesize: int):
+        return self.cache_path.joinpath(md5).stat().st_size == dest_filesize
+
+    def validate_file(self, filename: Path, md5: str):
+        with filename.open("rb") as file:
+            return md5 == hashlib.md5(file.read()).hexdigest()
+
+    # def validate_cache(self):
+    #     for filename in self.cache_path.glob("*"):
+    #         if filename.is_file():
+    #             if not self.validate_file(filename.stem):
+    #                 filename.unlink()
+
+    ################################################################
+    # Downloading and uploading related
+    def download_file(self, db_file: DatabaseFile):
+        output_file = Path(self.cache_path, db_file[DF.MD5]).with_suffix(".dpart")
+        while True:
+            LOGGER.info(f"[{FS_PROC_NAME}] Downloading '{db_file[DF.PATH]}'")
+            with output_file.open("wb") as file:
+                self.client.download(file_id=db_file[DF.ID], output_buffer=file)
+
+            if self.validate_file(output_file, db_file[DF.MD5]):
+                break
+            else:
+                LOGGER.info(f"[{FS_PROC_NAME}] Invalid md5 hash of '{db_file[DF.PATH]}'")
+                output_file.unlink(missing_ok=True)
+
+        # Remove .dpart extension
+        new_output_file = output_file.with_suffix("")
+        output_file.rename(new_output_file)
+
+        # Read only permissions
+        new_output_file.chmod(stat.S_IREAD | stat.S_IRGRP)  # stat.S_IROTH
+
+    ################################################################
     # FS ops
     def init(self, path: str):
         """Called on filesystem initialization. Path is always /"""
@@ -292,7 +339,8 @@ class DriveFileSystem(CustomOperations):
             new_parent_id = self.get_db_file(path=str(new.parent))[DF.ID]
 
             drive_file = self.client.move_file(file_id=old_db_file[DF.ID],
-                                               old_parent_id=old_parent_id, new_parent_id=new_parent_id)
+                                               old_parent_id=old_parent_id,
+                                               new_parent_id=new_parent_id)
             new_db_file = self.drive2db(drive_file)
             self.db.new_file(new_db_file)
 
@@ -314,7 +362,7 @@ class DriveFileSystem(CustomOperations):
         LOGGER.info(f"[{FS_PROC_NAME}] Removing directory '{path}'")
 
         id = self._remove(path)
-        # self.db.delete_file_children(id=id)
+        self.db.delete_file_children(id=id)
         self.db.delete_file(id=id)
 
     def unlink(self, path: str):
@@ -352,19 +400,59 @@ class DriveFileSystem(CustomOperations):
 
     ################################################################
     # File ops
-    # def create(self, path: str, mode, fi: Optional[int] = None) -> int:
-    #     """Create should return a numerical file handle."""
-    #     raise FuseOSError(errno.EROFS)
-    #     return 0
-    #
-    # def open(self, path: str, flags) -> int:
-    #     """Open should return a numerical file handle."""
-    #     return 0
-    #
-    # def read(self, path: str, size: int, offset: int, fh) -> bytes:
-    #     """Returns a byte string containing the data requested."""
-    #     raise FuseOSError(errno.EIO)
-    #
+    def create(self, path: str, mode, fi: Optional[int] = None) -> int:
+        """Create should return a numerical file handle."""
+        raise FuseOSError(errno.EROFS)
+        return 0
+
+    def open(self, path: str, flags) -> int:
+        """Open should return a numerical file handle."""
+        if self.term:
+            raise FuseOSError(errno.ENXIO)
+
+        mode = flag2mode(flags)
+        LOGGER.info(f"[{FS_PROC_NAME}] Opening '{path}' in '{mode}' mode ({flags})")
+
+        # Download
+        if "r" in mode or "a" in mode:
+            db_file = self.get_db_file(path)
+
+            # Files
+            if db_file[DF.MIME_TYPE] not in AF.GOOGLE_APP_MIME_TYPES:
+                try:
+                    assert self.is_cached(db_file[DF.MD5]), f"No cache found for '{path}'"
+                    assert self.check_filesize(md5=db_file[DF.MD5], dest_filesize=db_file[DF.FILE_SIZE]), f"Cache filesize mismatch for '{path}'"
+                    # TODO Validate cache if config says so
+                    return 0
+
+                except AssertionError as err:
+                    LOGGER.debug(f"[{FS_PROC_NAME}] {err}")
+
+                    self.download_lock.acquire()
+                    self.download_file(db_file)
+                    self.download_lock.release()
+                    return 0
+
+            # Google Apps
+            else:
+                return 0
+
+        return 0
+
+    def read(self, path: str, size: int, offset: int, fh) -> bytes:
+        """Returns a byte string containing the data requested."""
+        db_file = self.get_db_file(path)
+
+        # Files
+        if db_file[DF.MIME_TYPE] not in AF.GOOGLE_APP_MIME_TYPES:
+            with Path(self.cache_path, db_file[DF.MD5]).open("rb") as file:
+                file.seek(offset)
+                return file.read(size)
+
+        # Google Apps
+        else:
+            raise FuseOSError(errno.EIO)
+
     # def write(self, path: str, data: bytes, offset: int, fh):
     #     raise FuseOSError(errno.EROFS)
     #

@@ -221,8 +221,8 @@ class DriveClient:
             request = self.service.files().get_media(fileId=file_id)
 
         downloader = MediaIoBaseDownload(output_buffer, request)
-        eof = False
-        while not eof:
-            status, eof = downloader.next_chunk(num_retries=1)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk(num_retries=1)
             if update_func is not None:
                 update_func(status.progress())

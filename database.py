@@ -19,6 +19,8 @@ class DriveDatabase(Database):  # TODO add trigger for new files
         self._execute(f"CREATE INDEX IF NOT EXISTS {DF.PARENT_ID}_index ON '{self.files_table}' ({DF.PARENT_ID})")
         self._execute(f"CREATE INDEX IF NOT EXISTS {DF.PATH}_index ON '{self.files_table}' ({DF.PATH})")
 
+    ################################################################
+    # Files
     def new_file(self, file: DatabaseFile):
         query = f"INSERT OR REPLACE INTO '{self.files_table}' " \
                 f"({', '.join(DF.FILES_HEADERS.keys())}) " \
@@ -33,29 +35,29 @@ class DriveDatabase(Database):  # TODO add trigger for new files
         values = [file.tuple for file in files]
         self._executemany(query, values)
 
-    @eval_kwargs(DF.FILES_HEADERS)
+    @eval_kwargs(DatabaseFile)
     def get_file(self, **kwargs) -> Optional[DatabaseFile]:
         query = f"SELECT * FROM '{self.files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
         values = list(kwargs.values())
         item = self._execute_fetchone(query, values)
         return DatabaseFile.from_list(item) if item else None
 
-    @eval_kwargs(DF.FILES_HEADERS)
+    @eval_kwargs(DatabaseFile)
     def get_files(self, **kwargs) -> Optional[List[DatabaseFile]]:
         query = f"SELECT * FROM '{self.files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
         values = list(kwargs.values())
         items = self._execute_fetchall(query, values)
         return [DatabaseFile.from_list(row) for row in items]
 
-    # def delete_file_children(self, id: str):
-    #     ids = [id]
-    #     while ids:
-    #         db_files = self.get_files(**{DF.PARENT_ID: ids[0]})
-    #         ids.pop(0)
-    #
-    #         for db_file in db_files:
-    #             ids.append(db_file[DF.ID])
-    #             self.delete_file(id=db_file[DF.ID])
+    def delete_file_children(self, id: str):
+        ids = [id]
+        while ids:
+            db_files = self.get_files(**{DF.PARENT_ID: ids[0]})
+            ids.pop(0)
+
+            for db_file in db_files:
+                ids.append(db_file[DF.ID])
+                self.delete_file(id=db_file[DF.ID])
 
     def delete_file(self, id: str):
         query = f"DELETE FROM '{self.files_table}' WHERE id='{id}'"
