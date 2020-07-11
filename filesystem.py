@@ -5,11 +5,13 @@ from datetime import datetime
 import hashlib
 import threading
 import stat
+import os
 
-from refuse.high import FuseOSError
+import pyfuse3
+from pyfuse3 import Operations, FUSEError
 from pathlib import Path
 
-from CloudStorageFileSystem.utils.operations import CustomOperations, Stat, flag2mode
+from CloudStorageFileSystem.utils.operations import flag2mode
 from CloudStorageFileSystem.logger import LOGGER
 from .client import DriveClient, DriveFile
 from .database import DriveDatabase, DatabaseFile
@@ -23,12 +25,16 @@ def google_datetime_to_timestamp(datetime_str: str) -> int:
     return int(datetime.strptime(datetime_str, "%Y-%m-%dT%H:%M:%S.%fZ").timestamp())
 
 
-class DriveFileSystem(CustomOperations):
-    _statfs: dict
+class DriveFileSystem(Operations):
+    _statfs: pyfuse3.StatvfsData
 
     download_lock = threading.Lock()
 
+    _inode_map = {pyfuse3.ROOT_INODE: "/"}
+
     def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool, cache_path: Path):
+        super().__init__()
+
         self.db = db
         self.client = client
         self.trashed = trash
@@ -38,10 +44,10 @@ class DriveFileSystem(CustomOperations):
     ################################################################
     # Helpers
     def try2ignore(self, path: str):
-        """Ignore linux specific or file manager specific files and folders"""
+        """Ignore specific files and folders"""
         path = Path(path)
         if path.name in FF.IGNORED_FILES:
-            raise FuseOSError(errno.EIO)
+            raise FUSEError(errno.EIO)
 
     def get_db_file(self, path: str) -> Optional[DatabaseFile]:
         if path == "/":
@@ -50,12 +56,41 @@ class DriveFileSystem(CustomOperations):
             db_file = self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
         return db_file
 
-    def db2stat(self, db_file: DatabaseFile) -> Stat:
-        st = Stat(is_dir=db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE,
-                  atime=db_file[DF.ATIME] - time.timezone,
-                  mtime=db_file[DF.MTIME] - time.timezone,
-                  ctime=db_file[DF.CTIME] - time.timezone,
-                  size=0 if db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE else db_file[DF.FILE_SIZE])  # or 4096
+    def inode2path(self, inode: int) -> str:
+        return self._inode_map[inode]
+
+    def path2inode(self, path: str) -> int:
+        try:
+            paths = list(self._inode_map.values())
+            i = paths.index(path)
+            inode = list(self._inode_map.keys())[i]
+            return inode
+
+        except ValueError:
+            max_inode = max(self._inode_map.keys())
+            used_inodes = set(self._inode_map.keys())
+            holes = set(range(1, max_inode)).difference(used_inodes)
+            if len(holes) > 0:
+                inode = next(iter(holes))
+            else:
+                inode = max_inode + 1
+            self._inode_map[inode] = path
+
+            return inode
+
+    def db2stat(self, db_file: DatabaseFile) -> pyfuse3.EntryAttributes:
+        is_dir = db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE
+
+        st = pyfuse3.EntryAttributes()
+        st.st_ino = self.path2inode(db_file[DF.PATH])
+        st.st_mode = stat.S_IFDIR | 0o755 if is_dir else stat.S_IFREG | 0o644
+        st.st_nlink = 1
+        st.st_size = 0 if db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE else db_file[DF.FILE_SIZE]
+        st.st_blocks = int((st.st_size + 511) / 512)
+        st.st_atime_ns = float(db_file[DF.ATIME] - time.timezone)
+        st.st_mtime_ns = float(db_file[DF.MTIME] - time.timezone)
+        st.st_ctime_ns = float(db_file[DF.CTIME] - time.timezone)
+
         return st
 
     def drive2db(self, file: DriveFile) -> DatabaseFile:
@@ -102,6 +137,7 @@ class DriveFileSystem(CustomOperations):
 
         return drive_files
 
+    # Listing
     def recursive_listdir(self, path: str):
         LOGGER.debug(f"[{FS_PROC_NAME}] Recursively listing '{path}'")
         if path == "/":
@@ -181,6 +217,7 @@ class DriveFileSystem(CustomOperations):
         except ConnectionError as err:
             LOGGER.error(f"[{FS_PROC_NAME}] {err}")
 
+    # Removing anything
     def _remove(self, path: str) -> str:
         db_file = self.get_db_file(path)
         if db_file[DF.TRASHED]:
@@ -197,15 +234,16 @@ class DriveFileSystem(CustomOperations):
     def check_filesize(self, md5: str, dest_filesize: int):
         return self.cache_path.joinpath(md5).stat().st_size == dest_filesize
 
-    def validate_file(self, filename: Path, md5: str):
+    @staticmethod
+    def validate_cache_file(filename: Path, md5: str):
         with filename.open("rb") as file:
             return md5 == hashlib.md5(file.read()).hexdigest()
 
-    # def validate_cache(self):
-    #     for filename in self.cache_path.glob("*"):
-    #         if filename.is_file():
-    #             if not self.validate_file(filename.stem):
-    #                 filename.unlink()
+    def validate_all_cache_files(self):
+        for filename in self.cache_path.glob("*"):
+            if filename.is_file():
+                if not self.validate_cache_file(filename, filename.name):
+                    filename.unlink()
 
     ################################################################
     # Downloading and uploading related
@@ -216,7 +254,7 @@ class DriveFileSystem(CustomOperations):
             with output_file.open("wb") as file:
                 self.client.download(file_id=db_file[DF.ID], output_buffer=file)
 
-            if self.validate_file(output_file, db_file[DF.MD5]):
+            if self.validate_cache_file(output_file, db_file[DF.MD5]):
                 break
             else:
                 LOGGER.info(f"[{FS_PROC_NAME}] Invalid md5 hash of '{db_file[DF.PATH]}'")
@@ -231,94 +269,100 @@ class DriveFileSystem(CustomOperations):
 
     ################################################################
     # FS ops
-    def init(self, path: str):
-        """Called on filesystem initialization. Path is always /"""
+    def init(self):
         LOGGER.info(f"[{FS_PROC_NAME}] Initiating filesystem")
 
         drive_info = self.client.about()
         total_space = int(drive_info["storageQuota"]["limit"])
         used_space = int(drive_info["storageQuota"]["usage"])
-        self._statfs = {
-            "f_bsize": 512,  # Filesystem block size
-            "f_frsize": 512,  # Fragment size
-            "f_blocks": int(total_space / 512),  # Size of fs in f_frsize units
-            "f_bfree": int((total_space - used_space) / 512),  # Number of free blocks
-            "f_bavail": int((total_space - used_space) / 512),  # Number of free blocks for unprivileged users
-            "f_files": 0,  # Number of inodes
-            "f_ffree": 0,  # Number of free inodes
-            "f_favail": 0,  # Number of free inodes for unprivileged users
-            # "f_fsid": 0,  # Filesystem ID
-            # "f_flag": 0,  # Mount flags
-            # "f_namemax": 0  # Maximum filename length
-        }
 
-        self.recursive_listdir(path)
+        self._statfs = pyfuse3.StatvfsData()
+        self._statfs.f_bsize = 512  # Filesystem block size
+        self._statfs.f_frsize = 512  # Fragment size
+        self._statfs.f_blocks = int(total_space / 512)  # Size of fs in f_frsize units
+        self._statfs.f_bfree = int((total_space - used_space) / 512)  # Number of free blocks
+        self._statfs.f_bavail = int((total_space - used_space) / 512)  # Number of free blocks for unprivileged users
+        # self._statfs.f_files = 0,  # Number of inodes
+        # self._statfs.f_ffree = 0,  # Number of free inodes
+        # self._statfs.f_favail = 0,  # Number of free inodes for unprivileged users
+        # self._statfs.f_fsid = 0,  # Filesystem ID
+        # self._statfs.f_flag = 0,  # Mount flags
+        # self._statfs.f_namemax = 0  # Maximum filename length
+
+        self.recursive_listdir("/")
 
         LOGGER.info(f"[{FS_PROC_NAME}] Filesystem initiated successfully")
 
-    def destroy(self, path: str):
-        """Called on filesystem destruction. Path is always /"""
-        LOGGER.info(f"[{FS_PROC_NAME}] Destroying filesystem")
-
-    def statfs(self, path: str) -> dict:
-        """
-        Returns a dictionary with keys identical to the statvfs C structure of
-        statvfs(3).
-
-        On Mac OS X f_bsize and f_frsize must be a power of 2
-        (minimum 512).
-        """
-
-        LOGGER.debug(f"[{FS_PROC_NAME}] Statfs '{path}'")
+    async def statfs(self, ctx) -> pyfuse3.StatvfsData:
+        LOGGER.debug(f"[{FS_PROC_NAME}] Statfs")
         return self._statfs
-
-    # def ioctl(self, path, cmd, arg, fip, flags, data):
-    #     raise FuseOSError(errno.ENOTTY)
 
     ################################################################
     # Permissions
-    # def access(self, path: str, amode) -> int:
-    #     return 0
-    #
-    # def chmod(self, path: str, mode):
-    #     raise FuseOSError(errno.EROFS)
-    #
-    # def chown(self, path: str, uid, gid):
-    #     raise FuseOSError(errno.EROFS)
+    async def access(self, inode, mode, ctx) -> int:
+        pass
 
     ################################################################
     # Main ops
-    def getattr(self, path: str, fh: Optional[int] = None) -> Stat:
+    async def lookup(self, inode_p, name, ctx=None):
+        path = Path(self.inode2path(inode_p)).joinpath(os.fsdecode(name))
+        self.try2ignore(path)
+
+        db_file = self.get_db_file(str(path))
+        if db_file is not None:
+            inode = self.path2inode(db_file[DF.PATH])
+            return self.db2stat(db_file)
+        else:
+            LOGGER.error(f"[{FS_PROC_NAME}] '{path}' does not exist")
+            raise FUSEError(errno.ENOENT)
+
+    async def forget(self, inode_list):
+        print("forget", inode_list)
+
+    async def getattr(self, inode: int, ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
+        path = self.inode2path(inode)
         self.try2ignore(path)
 
         db_file = self.get_db_file(path)
         if db_file is not None:
-            # LOGGER.debug(f"[{FS_PROC_NAME}] Getting attributes of '{path}'")
+            inode = self.path2inode(db_file[DF.PATH])
             return self.db2stat(db_file)
-
         else:
             LOGGER.error(f"[{FS_PROC_NAME}] '{path}' does not exist")
-            raise FuseOSError(errno.ENOENT)
+            raise FUSEError(errno.ENOENT)
 
-    def readdir(self, path: str, fh) -> Union[str, Tuple[str, Stat, int]]:
-        self.try2ignore(path)
+    async def opendir(self, inode, ctx):
+        return inode
 
-        yield "."
-        yield ".."
+    async def releasedir(self, fh):
+        pass
 
+    async def readdir(self, inode, off, token):
+        path = self.inode2path(inode)
         db_file = self.get_db_file(path)
+
         if db_file is not None:
             LOGGER.info(f"[{FS_PROC_NAME}] Listing '{path}'")
             db_files = self.db.get_files(**{DF.PARENT_ID: db_file[DF.ID], DF.TRASHED: self.trashed})
 
             for db_file in db_files:
-                yield Path(db_file[DF.PATH]).name, self.db2stat(db_file), 0
+                if inode <= off:
+                    continue
+
+                if not pyfuse3.readdir_reply(
+                    token,
+                    os.fsencode(Path(db_file[DF.PATH]).name),
+                    self.db2stat(db_file),
+                    self.path2inode(db_file[DF.PATH])
+                ):
+                    break
 
         else:
             LOGGER.error(f"[{FS_PROC_NAME}] Unable to list '{path}', does not exist")
-            raise FuseOSError(errno.ENOENT)
+            raise FUSEError(errno.ENOENT)
 
-    def rename(self, old: str, new: str):
+    async def rename(self, parent_inode_old, name_old, parent_inode_new, name_new, flags, ctx):
+        raise FUSEError(errno.EIO)
         old_db_file = self.get_db_file(path=old)
 
         old = Path(old)
@@ -344,7 +388,11 @@ class DriveFileSystem(CustomOperations):
             new_db_file = self.drive2db(drive_file)
             self.db.new_file(new_db_file)
 
-    def mkdir(self, path: str, mode):
+    async def mknod(self, inode_p, name, mode, rdev, ctx):
+        raise FUSEError(errno.EIO)
+
+    async def mkdir(self, parent_inode, name, mode, ctx):
+        raise FUSEError(errno.EIO)
         self.try2ignore(path)
 
         LOGGER.info(f"[{FS_PROC_NAME}] Creating directory '{path}'")
@@ -358,58 +406,29 @@ class DriveFileSystem(CustomOperations):
         new_db_file = self.drive2db(drive_file)
         self.db.new_file(new_db_file)
 
-    def rmdir(self, path: str):
+    async def rmdir(self, parent_inode, name, ctx):
+        raise FUSEError(errno.EIO)
         LOGGER.info(f"[{FS_PROC_NAME}] Removing directory '{path}'")
 
         id = self._remove(path)
         self.db.delete_file_children(id=id)
         self.db.delete_file(id=id)
 
-    def unlink(self, path: str):
+    async def unlink(self, parent_inode, name, ctx):
+        raise FUSEError(errno.EIO)
         LOGGER.info(f"[{FS_PROC_NAME}] Removing file '{path}'")
 
         id = self._remove(path)
         self.db.delete_file(id=id)
 
     ################################################################
-    # Other ops
-    # def utimens(self, path: str, times: Optional[Tuple] = None) -> int:
-    #     """Times is a (atime, mtime) tuple. If None use current time."""
-    #     return 0
-    #
-    # def link(self, target: str, source: str):
-    #     """Creates a hard link `target -> source` (e.g. ln source target)"""
-    #     raise FuseOSError(errno.EROFS)
-    #
-    # def symlink(self, target: str, source: str):
-    #     """Creates a symlink `target -> source` (e.g. ln -s source target)"""
-    #     raise FuseOSError(errno.EROFS)
-    #
-    # def readlink(self, path: str):
-    #     raise FuseOSError(errno.ENOENT)
-    #
-    # def opendir(self, path: str) -> int:
-    #     """Returns a numerical file handle."""
-    #     return 0
-    #
-    # def releasedir(self, path: str, fh) -> int:
-    #     return 0
-    #
-    # def fsyncdir(self, path: str, datasync, fh) -> int:
-    #     return 0
-
-    ################################################################
     # File ops
-    def create(self, path: str, mode, fi: Optional[int] = None) -> int:
-        """Create should return a numerical file handle."""
-        raise FuseOSError(errno.EROFS)
+    async def create(self, parent_inode, name, mode, flags, ctx) -> int:
+        raise FUSEError(errno.EROFS)
         return 0
 
-    def open(self, path: str, flags) -> int:
-        """Open should return a numerical file handle."""
-        if self.term:
-            raise FuseOSError(errno.ENXIO)
-
+    async def open(self, inode, flags, ctx) -> int:
+        raise FUSEError(errno.EIO)
         mode = flag2mode(flags)
         LOGGER.info(f"[{FS_PROC_NAME}] Opening '{path}' in '{mode}' mode ({flags})")
 
@@ -439,8 +458,8 @@ class DriveFileSystem(CustomOperations):
 
         return 0
 
-    def read(self, path: str, size: int, offset: int, fh) -> bytes:
-        """Returns a byte string containing the data requested."""
+    async def read(self, fh, off, size) -> bytes:
+        raise FUSEError(errno.EIO)
         db_file = self.get_db_file(path)
 
         # Files
@@ -453,31 +472,17 @@ class DriveFileSystem(CustomOperations):
         else:
             raise FuseOSError(errno.EIO)
 
-    # def write(self, path: str, data: bytes, offset: int, fh):
-    #     raise FuseOSError(errno.EROFS)
-    #
-    # def truncate(self, path: str, length: int, fh: Optional[int] = None):
-    #     raise FuseOSError(errno.EROFS)
-    #
-    # def release(self, path: str, fh) -> int:
-    #     return 0
-    #
-    # def flush(self, path: str, fh) -> int:
-    #     return 0
-    #
-    # def fsync(self, path: str, datasync, fh) -> int:
-    #     return 0
+    async def write(self, fh, off, buf):
+        raise FUSEError(errno.EIO)
 
-    ################################################################
-    # Extended attributes
-    # def setxattr(self, path: str, name, value, options, position: int = 0):
-    #     raise FuseOSError(errno.ENOTSUP)
-    #
-    # def getxattr(self, path: str, name, position: int = 0):
-    #     raise FuseOSError(errno.ENOTSUP)
-    #
-    # def removexattr(self, path: str, name):
-    #     raise FuseOSError(errno.ENOTSUP)
-    #
-    # def listxattr(self, path: str) -> list:
-    #     return []
+    async def release(self, fh) -> int:
+        raise FUSEError(errno.EIO)
+        return 0
+
+    async def flush(self, fh) -> int:
+        raise FUSEError(errno.EIO)
+        pass
+
+    async def fsync(self, fh, datasync) -> int:
+        raise FUSEError(errno.EIO)
+        return 0

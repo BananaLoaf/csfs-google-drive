@@ -5,7 +5,7 @@ from .const import DF
 
 
 class DatabaseFile(DatabaseItem):
-    _headers = DF.FILES_HEADERS
+    headers = DF.FILES_HEADERS
 
 
 class DriveDatabase(Database):  # TODO add trigger for new files

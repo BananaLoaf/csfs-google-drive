@@ -3,9 +3,9 @@ from typing import Tuple, List
 
 from pathlib import Path
 import keyring
+import pyfuse3
 
 from CloudStorageFileSystem.utils.profile import Profile, ThreadHandler
-from CloudStorageFileSystem.utils.operations import CustomOperations
 from CloudStorageFileSystem.utils.exceptions import *
 from .client import DriveClient
 from .database import DriveDatabase
@@ -64,7 +64,7 @@ class GoogleDriveProfile(Profile):
     def _remove(self):
         keyring.delete_password(self.SERVICE_NAME, self.PROFILE_NAME)
 
-    def _start(self) -> Tuple[CustomOperations, Path, List[ThreadHandler]]:
+    def _start(self) -> Tuple[pyfuse3.Operations, Path, List[ThreadHandler]]:
         # Load credentials
         credentials = keyring.get_password(self.SERVICE_NAME, self.PROFILE_NAME)
         if credentials is not None:
@@ -76,7 +76,7 @@ class GoogleDriveProfile(Profile):
 
         self.client.update_root_id()
         db = DriveDatabase(self.profile_path.joinpath("data.db"))
-        fs = DriveFileSystem(db=db, client=self.client, trash=self.config[CF.MOUNT_SECTION][CF.TRASH], cache_path=self.cache_path)
+        ops = DriveFileSystem(db=db, client=self.client, trash=self.config[CF.MOUNT_SECTION][CF.TRASH], cache_path=self.cache_path)
 
         mountpoint = Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT])
-        return fs, mountpoint, []
+        return ops, mountpoint, []
