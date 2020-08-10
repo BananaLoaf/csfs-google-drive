@@ -102,7 +102,7 @@ class DriveFileSystem(Operations):
         return db_file
 
     def exec_query(self, q: str) -> List[DriveFile]:
-        LOGGER.debug(f"q='{q}'")
+        LOGGER.debug(f"q=\"{q}\"")
 
         drive_files, next_page_token = self.client.list_files(q=q)
         LOGGER.info(f"Received {len(drive_files)} DriveFiles")
@@ -282,26 +282,37 @@ class DriveFileSystem(Operations):
             LOGGER.error(f"'{path}' does not exist")
             raise FUSEError(errno.ENOENT)
 
-    async def forget(self, inode_list: list): # Called on sleep, hibernation
+    async def forget(self, inode_list: list):  # Called on sleep, hibernation
         for inode in inode_list:
+            # Root stays
+            if inode[0] == 1:
+                continue
+
             try:
-                path = self.inode_map[inode[0]]
-                print(path, inode)
+                path = self.inode_map.pop(inode[0])
+                LOGGER.info(f"Forgetting '{path}' ({inode[0]})")
             except KeyError:
-                print(inode)
+                LOGGER.warning(f"Unable to forget {inode[0]}")
 
     # async def setattr(self, inode, attr, fields, fh, ctx):
     #     pass
 
     async def getattr(self, inode: int, ctx: Optional[pyfuse3.RequestContext]) -> pyfuse3.EntryAttributes:
-        path = self.inode_map[inode]
-        self.try2ignore(path)
+        try:
+            try:
+                path = self.inode_map[inode]
+            except KeyError:
+                raise KeyError(f"({inode}) does not exist")
+            self.try2ignore(path)
 
-        db_file = self.get_db_file(path)
-        if db_file is not None:
+            db_file = self.get_db_file(path)
+            if db_file is None:
+                raise KeyError(f"'{path}' does not exist")
+
             return self.db2stat(db_file)
-        else:
-            LOGGER.error(f"'{path}' does not exist")
+
+        except KeyError as err:
+            LOGGER.error(err)
             raise FUSEError(errno.ENOENT)
 
     async def opendir(self, inode: int, ctx: Optional[pyfuse3.RequestContext]):
@@ -311,10 +322,16 @@ class DriveFileSystem(Operations):
         pass
 
     async def readdir(self, inode: int, start_id: int, token):
-        path = self.inode_map[inode]
-        db_file = self.get_db_file(path)
+        try:
+            try:
+                path = self.inode_map[inode]
+            except KeyError:
+                raise KeyError(f"({inode}) does not exist")
 
-        if db_file is not None:
+            db_file = self.get_db_file(path)
+            if db_file is None:
+                raise KeyError(f"Unable to list '{path}', does not exist")
+                
             LOGGER.info(f"Listing '{path}'")
             db_files = self.db.get_files(**{DF.PARENT_ID: db_file[DF.ID], DF.TRASHED: self.trashed})
 
@@ -333,8 +350,8 @@ class DriveFileSystem(Operations):
                 if not pyfuse3.readdir_reply(token, *args):
                     break
 
-        else:
-            LOGGER.error(f"Unable to list '{path}', does not exist")
+        except KeyError as err:
+            LOGGER.error(err)
             raise FUSEError(errno.ENOENT)
 
     async def rename(self, parent_inode_old, name_old, parent_inode_new, name_new, flags, ctx):
