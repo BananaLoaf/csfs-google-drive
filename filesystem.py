@@ -13,12 +13,10 @@ from pathlib import Path
 
 from CloudStorageFileSystem.utils.operations import flag2mode
 from CloudStorageFileSystem.logger import LOGGER
+from .inodemap import InodeMap
 from .client import DriveClient, DriveFile
 from .database import DriveDatabase, DatabaseFile
 from .const import DF, AF, FF
-
-
-FS_PROC_NAME = "Filesystem"
 
 
 def google_datetime_to_timestamp(datetime_str: str) -> int:
@@ -30,7 +28,7 @@ class DriveFileSystem(Operations):
 
     download_lock = threading.Lock()
 
-    _inode_map = {pyfuse3.ROOT_INODE: "/"}
+    inode_map = InodeMap()
 
     def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool, cache_path: Path):
         super().__init__()
@@ -56,36 +54,14 @@ class DriveFileSystem(Operations):
             db_file = self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
         return db_file
 
-    def inode2path(self, inode: int) -> str:
-        return self._inode_map[inode]
-
-    def path2inode(self, path: str) -> int:
-        try:
-            paths = list(self._inode_map.values())
-            i = paths.index(path)
-            inode = list(self._inode_map.keys())[i]
-            return inode
-
-        except ValueError:
-            max_inode = max(self._inode_map.keys())
-            used_inodes = set(self._inode_map.keys())
-            holes = set(range(1, max_inode)).difference(used_inodes)
-            if len(holes) > 0:
-                inode = next(iter(holes))
-            else:
-                inode = max_inode + 1
-            self._inode_map[inode] = path
-
-            return inode
-
     def db2stat(self, db_file: DatabaseFile) -> pyfuse3.EntryAttributes:
         is_dir = db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE
 
         st = pyfuse3.EntryAttributes()
-        st.st_ino = self.path2inode(db_file[DF.PATH])
+        st.st_ino = self.inode_map.path2inode(db_file[DF.PATH])
         st.st_mode = stat.S_IFDIR | 0o755 if is_dir else stat.S_IFREG | 0o644
         st.st_nlink = 1
-        st.st_size = 0 if db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE else db_file[DF.FILE_SIZE]
+        st.st_size = 0 if is_dir else db_file[DF.FILE_SIZE]
         st.st_blocks = int((st.st_size + 511) / 512)
         st.st_atime_ns = float(db_file[DF.ATIME] - time.timezone)
         st.st_mtime_ns = float(db_file[DF.MTIME] - time.timezone)
@@ -126,20 +102,20 @@ class DriveFileSystem(Operations):
         return db_file
 
     def exec_query(self, q: str) -> List[DriveFile]:
-        LOGGER.debug(f"[{FS_PROC_NAME}] q='{q}'")
+        LOGGER.debug(f"q='{q}'")
 
         drive_files, next_page_token = self.client.list_files(q=q)
-        LOGGER.info(f"[{FS_PROC_NAME}] Received {len(drive_files)} DriveFiles")
+        LOGGER.info(f"Received {len(drive_files)} DriveFiles")
         while next_page_token is not None:
             drive_files_next, next_page_token = self.client.list_files(q=q, next_page_token=next_page_token)
             drive_files += drive_files_next
-            LOGGER.info(f"[{FS_PROC_NAME}] Received {len(drive_files)} DriveFiles")
+            LOGGER.info(f"Received {len(drive_files)} DriveFiles")
 
         return drive_files
 
     # Listing
     def recursive_listdir(self, path: str):
-        LOGGER.debug(f"[{FS_PROC_NAME}] Recursively listing '{path}'")
+        LOGGER.debug(f"Recursively listing '{path}'")
         if path == "/":
             self._recursive_list_root()
         else:
@@ -203,10 +179,10 @@ class DriveFileSystem(Operations):
                 drive_files += self.exec_query(q=q)
 
     def listdir(self, path: str):
-        LOGGER.debug(f"[{FS_PROC_NAME}] Listing '{path}'")
+        LOGGER.debug(f"Listing '{path}'")
         parent_id = AF.ROOT_ID if path == "/" else self.get_db_file(path=path)[DF.ID]
         try:
-            LOGGER.debug(f"[{FS_PROC_NAME}] Updating files inside '{path}' - '{parent_id}'")
+            LOGGER.debug(f"Updating files inside '{path}' - '{parent_id}'")
             q = f"'{parent_id}' in parents and trashed={str(self.trashed).lower()}"
             drive_files = self.exec_query(q=q)
             drive_files.append(self.client.get_by_id(id=parent_id))
@@ -215,16 +191,7 @@ class DriveFileSystem(Operations):
             self.db.new_files(db_files)
 
         except ConnectionError as err:
-            LOGGER.error(f"[{FS_PROC_NAME}] {err}")
-
-    # Removing anything
-    def _remove(self, path: str) -> str:
-        db_file = self.get_db_file(path)
-        if db_file[DF.TRASHED]:
-            self.client.untrash_file(id=db_file[DF.ID])
-        else:
-            self.client.trash_file(id=db_file[DF.ID])
-        return db_file[DF.ID]
+            LOGGER.error(err)
 
     ################################################################
     # Cache handling
@@ -250,14 +217,14 @@ class DriveFileSystem(Operations):
     def download_file(self, db_file: DatabaseFile):
         output_file = Path(self.cache_path, db_file[DF.MD5]).with_suffix(".dpart")
         while True:
-            LOGGER.info(f"[{FS_PROC_NAME}] Downloading '{db_file[DF.PATH]}'")
+            LOGGER.info(f"Downloading '{db_file[DF.PATH]}'")
             with output_file.open("wb") as file:
                 self.client.download(file_id=db_file[DF.ID], output_buffer=file)
 
             if self.validate_cache_file(output_file, db_file[DF.MD5]):
                 break
             else:
-                LOGGER.info(f"[{FS_PROC_NAME}] Invalid md5 hash of '{db_file[DF.PATH]}'")
+                LOGGER.info(f"Invalid md5 hash of '{db_file[DF.PATH]}'")
                 output_file.unlink(missing_ok=True)
 
         # Remove .dpart extension
@@ -270,11 +237,11 @@ class DriveFileSystem(Operations):
     ################################################################
     # FS ops
     def init(self):
-        LOGGER.info(f"[{FS_PROC_NAME}] Initiating filesystem")
+        LOGGER.info(f"Initiating filesystem")
 
         drive_info = self.client.about()
         total_space = int(drive_info["storageQuota"]["limit"])
-        used_space = int(drive_info["storageQuota"]["usage"])
+        used_space = int(drive_info["storageQuota"]["usageInDrive"])
 
         self._statfs = pyfuse3.StatvfsData()
         self._statfs.f_bsize = 512  # Filesystem block size
@@ -291,74 +258,83 @@ class DriveFileSystem(Operations):
 
         self.recursive_listdir("/")
 
-        LOGGER.info(f"[{FS_PROC_NAME}] Filesystem initiated successfully")
+        LOGGER.info(f"Filesystem initiated successfully")
 
     async def statfs(self, ctx) -> pyfuse3.StatvfsData:
-        LOGGER.debug(f"[{FS_PROC_NAME}] Statfs")
+        LOGGER.debug(f"Statfs")
         return self._statfs
 
     ################################################################
     # Permissions
     async def access(self, inode, mode, ctx) -> int:
-        pass
+        return True
 
     ################################################################
     # Main ops
-    async def lookup(self, inode_p, name, ctx=None):
-        path = Path(self.inode2path(inode_p)).joinpath(os.fsdecode(name))
+    async def lookup(self, inode_p: int, name: bytes, ctx: Optional[pyfuse3.RequestContext] = None):
+        path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
         self.try2ignore(path)
 
         db_file = self.get_db_file(str(path))
         if db_file is not None:
-            inode = self.path2inode(db_file[DF.PATH])
             return self.db2stat(db_file)
         else:
-            LOGGER.error(f"[{FS_PROC_NAME}] '{path}' does not exist")
+            LOGGER.error(f"'{path}' does not exist")
             raise FUSEError(errno.ENOENT)
 
-    async def forget(self, inode_list):
-        print("forget", inode_list)
+    async def forget(self, inode_list: list): # Called on sleep, hibernation
+        for inode in inode_list:
+            try:
+                path = self.inode_map[inode[0]]
+                print(path, inode)
+            except KeyError:
+                print(inode)
 
-    async def getattr(self, inode: int, ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
-        path = self.inode2path(inode)
+    # async def setattr(self, inode, attr, fields, fh, ctx):
+    #     pass
+
+    async def getattr(self, inode: int, ctx: Optional[pyfuse3.RequestContext]) -> pyfuse3.EntryAttributes:
+        path = self.inode_map[inode]
         self.try2ignore(path)
 
         db_file = self.get_db_file(path)
         if db_file is not None:
-            inode = self.path2inode(db_file[DF.PATH])
             return self.db2stat(db_file)
         else:
-            LOGGER.error(f"[{FS_PROC_NAME}] '{path}' does not exist")
+            LOGGER.error(f"'{path}' does not exist")
             raise FUSEError(errno.ENOENT)
 
-    async def opendir(self, inode, ctx):
+    async def opendir(self, inode: int, ctx: Optional[pyfuse3.RequestContext]):
         return inode
 
-    async def releasedir(self, fh):
+    async def releasedir(self, fh: int):
         pass
 
-    async def readdir(self, inode, off, token):
-        path = self.inode2path(inode)
+    async def readdir(self, inode: int, start_id: int, token):
+        path = self.inode_map[inode]
         db_file = self.get_db_file(path)
 
         if db_file is not None:
-            LOGGER.info(f"[{FS_PROC_NAME}] Listing '{path}'")
+            LOGGER.info(f"Listing '{path}'")
             db_files = self.db.get_files(**{DF.PARENT_ID: db_file[DF.ID], DF.TRASHED: self.trashed})
 
+            # List all entries and sort them by inode
+            entries = []
             for db_file in db_files:
-                if inode <= off:
-                    continue
+                name = os.fsencode(Path(db_file[DF.PATH]).name)
+                stat = self.db2stat(db_file)
+                inode = stat.st_ino
+                entries.append((name, stat, inode))
 
-                if not pyfuse3.readdir_reply(
-                    token,
-                    os.fsencode(Path(db_file[DF.PATH]).name),
-                    self.db2stat(db_file),
-                    self.path2inode(db_file[DF.PATH])
-                ):
+            entries = list(sorted(entries, key=lambda e: e[2]))
+
+            # Take only new entries if start_id > 0, new entries are guaranteed to be at the end
+            for args in entries[start_id - 1 if start_id > 0 else start_id:]:
+                if not pyfuse3.readdir_reply(token, *args):
                     break
 
         else:
-            LOGGER.error(f"[{FS_PROC_NAME}] Unable to list '{path}', does not exist")
+            LOGGER.error(f"Unable to list '{path}', does not exist")
             raise FUSEError(errno.ENOENT)
 
     async def rename(self, parent_inode_old, name_old, parent_inode_new, name_new, flags, ctx):
@@ -369,7 +345,7 @@ class DriveFileSystem(Operations):
         new = Path(new)
         # Renaming
         if old.parent == new.parent:
-            LOGGER.info(f"[{FS_PROC_NAME}] Renaming '{old}' into '{new}'")
+            LOGGER.info(f"Renaming '{old}' into '{new}'")
 
             drive_file = self.client.rename_file(id=old_db_file[DF.ID], name=new.name)
             new_db_file = self.drive2db(drive_file)
@@ -377,7 +353,7 @@ class DriveFileSystem(Operations):
 
         # Moving
         else:
-            LOGGER.info(f"[{FS_PROC_NAME}] Moving '{old}' to '{new}'")
+            LOGGER.info(f"Moving '{old}' to '{new}'")
 
             old_parent_id = self.get_db_file(path=str(old.parent))[DF.ID]
             new_parent_id = self.get_db_file(path=str(new.parent))[DF.ID]
@@ -388,14 +364,14 @@ class DriveFileSystem(Operations):
             new_db_file = self.drive2db(drive_file)
             self.db.new_file(new_db_file)
 
-    async def mknod(self, inode_p, name, mode, rdev, ctx):
-        raise FUSEError(errno.EIO)
+    # async def mknod(self, inode_p, name, mode, rdev, ctx):
+    #     raise FUSEError(errno.EIO)
 
     async def mkdir(self, parent_inode, name, mode, ctx):
         raise FUSEError(errno.EIO)
         self.try2ignore(path)
 
-        LOGGER.info(f"[{FS_PROC_NAME}] Creating directory '{path}'")
+        LOGGER.info(f"Creating directory '{path}'")
 
         path = Path(path)
         parent_path = path.parent
@@ -406,9 +382,17 @@ class DriveFileSystem(Operations):
         new_db_file = self.drive2db(drive_file)
         self.db.new_file(new_db_file)
 
+    def _remove(self, path: str) -> str:
+        db_file = self.get_db_file(path)
+        if db_file[DF.TRASHED]:
+            self.client.untrash_file(id=db_file[DF.ID])
+        else:
+            self.client.trash_file(id=db_file[DF.ID])
+        return db_file[DF.ID]
+
     async def rmdir(self, parent_inode, name, ctx):
         raise FUSEError(errno.EIO)
-        LOGGER.info(f"[{FS_PROC_NAME}] Removing directory '{path}'")
+        LOGGER.info(f"Removing directory '{path}'")
 
         id = self._remove(path)
         self.db.delete_file_children(id=id)
@@ -416,7 +400,7 @@ class DriveFileSystem(Operations):
 
     async def unlink(self, parent_inode, name, ctx):
         raise FUSEError(errno.EIO)
-        LOGGER.info(f"[{FS_PROC_NAME}] Removing file '{path}'")
+        LOGGER.info(f"Removing file '{path}'")
 
         id = self._remove(path)
         self.db.delete_file(id=id)
@@ -430,7 +414,7 @@ class DriveFileSystem(Operations):
     async def open(self, inode, flags, ctx) -> int:
         raise FUSEError(errno.EIO)
         mode = flag2mode(flags)
-        LOGGER.info(f"[{FS_PROC_NAME}] Opening '{path}' in '{mode}' mode ({flags})")
+        LOGGER.info(f"Opening '{path}' in '{mode}' mode ({flags})")
 
         # Download
         if "r" in mode or "a" in mode:
@@ -445,7 +429,7 @@ class DriveFileSystem(Operations):
                     return 0
 
                 except AssertionError as err:
-                    LOGGER.debug(f"[{FS_PROC_NAME}] {err}")
+                    LOGGER.debug(err)
 
                     self.download_lock.acquire()
                     self.download_file(db_file)
