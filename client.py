@@ -88,6 +88,7 @@ class DriveClient:
 
     @property
     def service(self):
+        """For every thread new service is created"""
         try:
             return self._service[threading.get_ident()]
         except KeyError:
@@ -96,16 +97,22 @@ class DriveClient:
 
     @property
     def start_page_token(self):
+        """https://developers.google.com/drive/api/v3/reference/changes/getStartPageToken"""
         return self.service.changes().getStartPageToken().execute()["startPageToken"]
 
     # @is_connected
     def auth(self) -> str:
+        """
+        Launches local authentication server and opens browser
+        :return: json credentials as str
+        """
         LOGGER.info("Authenticating")
         self.credentials = self.flow.run_local_server(host="localhost", port=8080)
         return self.credentials.to_json()
 
     # @is_connected
     def load_credentials(self, credentials: dict) -> bool:
+        """Load credentials from dict"""
         credentials = Credentials.from_authorized_user_info(credentials, self._scopes)
 
         if not credentials.valid:
@@ -130,17 +137,23 @@ class DriveClient:
             return True
 
     def update_root_id(self):
+        """Update root id 'root' to actual root id"""
         AF.ROOT_ID = self.get_by_id(id=AF.ROOT_ID)["id"]
 
     def about(self):
-        response = self.service.about().get(fields="user(*),storageQuota(*),maxImportSizes,maxUploadSize").execute(num_retries=1)
+        """https://developers.google.com/drive/api/v3/reference/about"""
+        response = self.service.about().get(fields="*").execute(num_retries=1)
         return response
 
     # @is_connected
     # @lock
     def changes(self, page_token: str, fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> dict:
+        """
+        https://developers.google.com/drive/api/v3/reference/changes
+        :param fields: Pass None to get all file fields, for custom fields refer to https://developers.google.com/drive/api/v3/reference/files
+        """
         if fields is None:
-            fields = "nextPageToken,newStartPageToken,changes(removed,file(*))"
+            fields = "nextPageToken,newStartPageToken,changes(removed,fileId,file(*))"
         else:
             fields = f"nextPageToken,newStartPageToken,changes(removed,fileId,file({','.join(fields)}))"
 
@@ -155,10 +168,17 @@ class DriveClient:
     def list_files(self, q: str,
                    next_page_token: Optional[str] = None,
                    fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> Tuple[List[DriveFile], Optional[str]]:
-
+        """
+        https://developers.google.com/drive/api/v3/reference/files/list
+        :param q:
+        :param next_page_token:
+        :param fields: Pass None to get all file fields, for custom fields refer to https://developers.google.com/drive/api/v3/reference/files
+        :return: DriveFile objects and next page token
+        """
         kwargs = {"q": q,
                   "fields": "*" if fields is None else f"nextPageToken,files({','.join(fields)})",
-                  "pageSize": 1000}
+                  "pageSize": 1000,
+                  "spaces": "drive"}
         if next_page_token is not None:
             kwargs["pageToken"] = next_page_token
 
@@ -170,6 +190,12 @@ class DriveClient:
     # @is_connected
     # @lock
     def get_by_id(self, id: str, fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> DriveFile:
+        """
+        https://developers.google.com/drive/api/v3/reference/files/get
+        :param id:
+        :param fields: Pass None to get all file fields, for custom fields refer to https://developers.google.com/drive/api/v3/reference/files
+        :return:
+        """
         file = self.service.files().get(fileId=id,
                                         fields="*" if fields is None else ','.join(fields)).execute(num_retries=1)
         return DriveFile(**file)
@@ -177,6 +203,13 @@ class DriveClient:
     # @is_connected
     # @lock
     def create_folder(self, parent_id: str, name: str, fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> DriveFile:
+        """
+
+        :param parent_id: New Folder's parent
+        :param name: New Folder's name
+        :param fields: Fields to return after creation, pass None to get all file fields, for custom fields refer to https://developers.google.com/drive/api/v3/reference/files
+        :return: DriveFile of newly created folder
+        """
         file_metadata = {
             "name": name,
             "mimeType": AF.FOLDER_MIME_TYPE,
@@ -189,16 +222,25 @@ class DriveClient:
     # @is_connected
     # @lock
     def trash_file(self, id: str):
+        """https://developers.google.com/drive/api/v3/reference/files/update"""
         self.service.files().update(fileId=id, body={"trashed": True}).execute(num_retries=1)
 
     # @is_connected
     # @lock
     def untrash_file(self, id: str):
+        """https://developers.google.com/drive/api/v3/reference/files/update"""
         self.service.files().update(fileId=id, body={"trashed": False}).execute(num_retries=1)
 
     # @is_connected
     # @lock
     def rename_file(self, id: str, name: str, fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> DriveFile:
+        """
+        https://developers.google.com/drive/api/v3/reference/files/update
+        :param id: ID of a file to rename
+        :param name: New name
+        :param fields: Fields to return after update, pass None to get all file fields, for custom fields refer to https://developers.google.com/drive/api/v3/reference/files
+        :return: DriveFile of updated file
+        """
         file = self.service.files().update(fileId=id,
                                            body={"name": name},
                                            fields="*" if fields is None else ','.join(fields)).execute(num_retries=1)
@@ -207,6 +249,14 @@ class DriveClient:
     # @is_connected
     # @lock
     def move_file(self, file_id: str, old_parent_id: str, new_parent_id: str, fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> DriveFile:
+        """
+        https://developers.google.com/drive/api/v3/reference/files/update
+        :param file_id: ID of a file to move
+        :param old_parent_id:
+        :param new_parent_id:
+        :param fields: Fields to return after update, pass None to get all file fields, for custom fields refer to https://developers.google.com/drive/api/v3/reference/files
+        :return: DriveFile of updated file
+        """
         file = self.service.files().update(fileId=file_id,
                                            addParents=new_parent_id,
                                            removeParents=old_parent_id,
@@ -215,6 +265,13 @@ class DriveClient:
 
     # @is_connected
     def download(self, file_id: str, output_buffer: BinaryIO, mime_type: Optional[str] = None, update_func: Optional[Callable] = None):
+        """
+        https://developers.google.com/drive/api/v3/manage-downloads
+        :param file_id: ID of a file do download
+        :param output_buffer: Buffer to write to
+        :param mime_type: Optional, required for Google Apps to export them
+        :param update_func: Function to run at every new data chunk, 1 float value is passed
+        """
         if mime_type is not None:
             request = self.service.files().export_media(fileId=file_id, mimeType=mime_type)
         else:
