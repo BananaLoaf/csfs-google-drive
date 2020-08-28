@@ -3,6 +3,7 @@ from typing import Tuple, List
 
 from pathlib import Path
 import keyring
+from keyring import errors
 import pyfuse3
 
 from CloudStorageFileSystem.utils.profile import Profile, ThreadHandler
@@ -62,7 +63,10 @@ class GoogleDriveProfile(Profile):
         keyring.set_password(self.SERVICE_NAME, self.PROFILE_NAME, credentials)
 
     def _remove(self):
-        keyring.delete_password(self.SERVICE_NAME, self.PROFILE_NAME)
+        try:
+            keyring.delete_password(self.SERVICE_NAME, self.PROFILE_NAME)
+        except keyring.errors.PasswordDeleteError:
+            pass
 
     def _start(self) -> Tuple[pyfuse3.Operations, Path, List[ThreadHandler]]:
         # Load credentials
