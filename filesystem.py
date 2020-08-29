@@ -254,7 +254,7 @@ class DriveFileSystem(Operations):
         # self._statfs.f_favail = 0,  # Number of free inodes for unprivileged users
         # self._statfs.f_fsid = 0,  # Filesystem ID
         # self._statfs.f_flag = 0,  # Mount flags
-        # self._statfs.f_namemax = 0  # Maximum filename length
+        self._statfs.f_namemax = 32767  # Maximum filename length
 
         self.recursive_listdir("/")
 
@@ -272,27 +272,36 @@ class DriveFileSystem(Operations):
     ################################################################
     # Main ops
     async def lookup(self, inode_p: int, name: bytes, ctx: Optional[pyfuse3.RequestContext] = None):
-        path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
-        self.try2ignore(path)
+        try:
+            try:
+                parent_path = self.inode_map[inode_p]
+            except KeyError:
+                raise FileNotFoundError(f"Parent inode ({inode_p}) does not exist")
 
-        db_file = self.get_db_file(str(path))
-        if db_file is not None:
-            return self.db2stat(db_file)
-        else:
-            LOGGER.error(f"'{path}' does not exist")
+            path = Path(parent_path).joinpath(os.fsdecode(name))
+            self.try2ignore(path)
+
+            db_file = self.get_db_file(str(path))
+            if db_file is not None:
+                return self.db2stat(db_file)
+            else:
+                raise FileNotFoundError(f"'{path}' does not exist")
+
+        except FileNotFoundError as err:
+            LOGGER.error(err)
             raise FUSEError(errno.ENOENT)
 
     async def forget(self, inode_list: list):  # Called on sleep, hibernation
         for inode in inode_list:
             # Root stays
-            if inode[0] == 1:
+            if inode[0] == pyfuse3.ROOT_INODE:
                 continue
 
             try:
                 path = self.inode_map.pop(inode[0])
                 LOGGER.info(f"Forgetting '{path}' ({inode[0]})")
             except KeyError:
-                LOGGER.warning(f"Unable to forget {inode[0]}")
+                LOGGER.warning(f"Nothing to forget, inode ({inode[0]})")
 
     # async def setattr(self, inode, attr, fields, fh, ctx):
     #     pass
@@ -302,16 +311,16 @@ class DriveFileSystem(Operations):
             try:
                 path = self.inode_map[inode]
             except KeyError:
-                raise KeyError(f"({inode}) does not exist")
+                raise FileNotFoundError(f"Inode ({inode}) does not exist")
             self.try2ignore(path)
 
             db_file = self.get_db_file(path)
             if db_file is None:
-                raise KeyError(f"'{path}' does not exist")
+                raise FileNotFoundError(f"'{path}' does not exist")
 
             return self.db2stat(db_file)
 
-        except KeyError as err:
+        except FileNotFoundError as err:
             LOGGER.error(err)
             raise FUSEError(errno.ENOENT)
 
@@ -326,12 +335,12 @@ class DriveFileSystem(Operations):
             try:
                 path = self.inode_map[inode]
             except KeyError:
-                raise KeyError(f"({inode}) does not exist")
+                raise FileNotFoundError(f"Inode ({inode}) does not exist")
 
             db_file = self.get_db_file(path)
             if db_file is None:
-                raise KeyError(f"Unable to list '{path}', does not exist")
-                
+                raise FileNotFoundError(f"'{path}' does not exist")
+
             LOGGER.info(f"Listing '{path}'")
             db_files = self.db.get_files(**{DF.PARENT_ID: db_file[DF.ID], DF.TRASHED: self.trashed})
 
@@ -343,6 +352,7 @@ class DriveFileSystem(Operations):
                 inode = stat.st_ino
                 entries.append((name, stat, inode))
 
+            # Sort entries bu inode
             entries = list(sorted(entries, key=lambda e: e[2]))
 
             # Take only new entries if start_id > 0, new entries are guaranteed to be at the end
@@ -350,7 +360,7 @@ class DriveFileSystem(Operations):
                 if not pyfuse3.readdir_reply(token, *args):
                     break
 
-        except KeyError as err:
+        except FileNotFoundError as err:
             LOGGER.error(err)
             raise FUSEError(errno.ENOENT)
 
