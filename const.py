@@ -6,7 +6,7 @@ class CF:  # Config Fields
 
 
 class FF:  # File System Fields
-    IGNORED_FILES = [".Trash", ".Trash-1000", "BDMV", ".xdg-volume-info", "autorun.inf", ".hidden", ".comments"]
+    IGNORED_FILES = [".Trash", ".Trash-1000", "BDMV", ".xdg-volume-info", "autorun.inf", ".hidden", ".comments", ".directory"]
 
     DESKTOP: str = "DESKTOP"
     CONVERT: str = "CONVERT"

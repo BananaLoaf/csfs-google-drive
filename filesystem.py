@@ -394,20 +394,35 @@ class DriveFileSystem(Operations):
     # async def mknod(self, inode_p, name, mode, rdev, ctx):
     #     raise FUSEError(errno.EIO)
 
-    async def mkdir(self, parent_inode, name, mode, ctx):
-        raise FUSEError(errno.EIO)
-        self.try2ignore(path)
+    async def mkdir(self, inode_p, name, mode, ctx):
+        try:
+            try:
+                parent_path = self.inode_map[inode_p]
+            except KeyError:
+                raise FileNotFoundError(f"Parent inode ({inode_p}) does not exist")
 
-        LOGGER.info(f"Creating directory '{path}'")
+            path = Path(parent_path).joinpath(os.fsdecode(name))
+            self.try2ignore(path)
 
-        path = Path(path)
-        parent_path = path.parent
+            db_file = self.get_db_file(str(path))
+            if db_file is not None:
+                raise FileExistsError(f"'{path}' already exists")
 
-        parent_id = self.get_db_file(path=str(parent_path))[DF.ID]
-        drive_file = self.client.create_folder(parent_id=parent_id, name=path.name)
+            LOGGER.info(f"Creating directory '{path}'")
+            parent_id = self.get_db_file(path=str(parent_path))[DF.ID]
+            drive_file = self.client.create_folder(parent_id=parent_id, name=path.name)
+            db_file = self.drive2db(drive_file)
+            self.db.new_file(db_file)
 
-        new_db_file = self.drive2db(drive_file)
-        self.db.new_file(new_db_file)
+            return self.db2stat(db_file)
+
+        except FileNotFoundError as err:
+            LOGGER.error(err)
+            raise FUSEError(errno.ENOENT)
+
+        except FileExistsError as err:
+            LOGGER.error(err)
+            raise FUSEError(errno.EEXIST)
 
     def _remove(self, path: str) -> str:
         db_file = self.get_db_file(path)
