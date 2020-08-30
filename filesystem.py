@@ -86,10 +86,7 @@ class DriveFileSystem(Operations):
         if file["id"] == AF.ROOT_ID:
             path = "/"
         else:
-            if parent_id == AF.ROOT_ID:
-                kwargs = {DF.ID: parent_id}
-            else:
-                kwargs = {DF.ID: parent_id, DF.TRASHED: self.trashed}
+            kwargs = {DF.ID: parent_id} if parent_id == AF.ROOT_ID else {DF.ID: parent_id, DF.TRASHED: self.trashed}
             parent_db_file = self.db.get_file(**kwargs)
             path = str(Path(parent_db_file[DF.PATH], file["name"]))
 
@@ -159,6 +156,13 @@ class DriveFileSystem(Operations):
                 lambda drive_file: drive_file["parents"][0] in added_ids,
                 folders_drive_files
             ))
+
+            # Folder was (un)trashed, but its parent wasn't and parent id needs to be reset to root
+            if len(folder_drive_files_next) == 0:
+                for drive_file in folders_drive_files:
+                    drive_file["parents"][0] = AF.ROOT_ID
+                continue
+
             self.db.new_files([self.drive2db(drive_file) for drive_file in folder_drive_files_next])
             added_ids += [drive_file[DF.ID] for drive_file in folder_drive_files_next]
 
@@ -168,7 +172,11 @@ class DriveFileSystem(Operations):
                 folders_drive_files
             ))
 
-        # Add file files
+        # File was (un)trashed, but its parent wasn't and parent id needs to be reset to root
+        for drive_file in file_drive_files:
+            if drive_file["parents"][0] not in added_ids:
+                drive_file["parents"][0] = AF.ROOT_ID
+        # Add files
         self.db.new_files([self.drive2db(drive_file) for drive_file in file_drive_files])
 
     def _recursive_list_any(self, parent_id: str):

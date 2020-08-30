@@ -54,7 +54,7 @@ class GoogleDriveProfile(Profile):
             CF.MOUNT_SECTION: {
                 CF.MOUNTPOINT: str(Path.home().joinpath("GoogleDrive")),
                 CF.TRASH: False,
-                CF.GOOGLE_APP_MODE: FF.DESKTOP
+                CF.GOOGLE_APP_MODE: FF.WEB
             }
         }
 
