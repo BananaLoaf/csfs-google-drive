@@ -63,9 +63,9 @@ class DriveFileSystem(Operations):
         st.st_nlink = 1
         st.st_size = 0 if is_dir else db_file[DF.FILE_SIZE]
         st.st_blocks = int((st.st_size + 511) / 512)
-        st.st_atime_ns = float(db_file[DF.ATIME] - time.timezone)
-        st.st_mtime_ns = float(db_file[DF.MTIME] - time.timezone)
-        st.st_ctime_ns = float(db_file[DF.CTIME] - time.timezone)
+        st.st_atime_ns = float(db_file[DF.ATIME] - time.timezone) * 10**9
+        st.st_mtime_ns = float(db_file[DF.MTIME] - time.timezone) * 10**9
+        st.st_ctime_ns = float(db_file[DF.MTIME] - time.timezone) * 10**9
 
         return st
 
@@ -76,12 +76,16 @@ class DriveFileSystem(Operations):
         if file["id"] == AF.ROOT_ID:
             path = "/"
         else:
-            parent_db_file = self.db.get_file(**{DF.ID: parent_id, DF.TRASHED: self.trashed})
+            if parent_id == AF.ROOT_ID:
+                kwargs = {DF.ID: parent_id}
+            else:
+                kwargs = {DF.ID: parent_id, DF.TRASHED: self.trashed}
+            parent_db_file = self.db.get_file(**kwargs)
             path = str(Path(parent_db_file[DF.PATH], file["name"]))
 
         file_size = file["size"] if "size" in file.keys() else 0
         atime = google_datetime_to_timestamp(file["viewedByMeTime"]) if "viewedByMeTime" in file.keys() else 0
-        ctime = google_datetime_to_timestamp(file["createdTime"])
+        ctime = google_datetime_to_timestamp(file["createdTime"])  # TODO ctime is not creation time
         mtime = google_datetime_to_timestamp(file["modifiedTime"])
         mime_type = file["mimeType"]
         trashed = file["trashed"]

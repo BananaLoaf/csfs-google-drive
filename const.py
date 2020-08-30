@@ -38,7 +38,7 @@ class DF:  # Database Fields
 
 
 class AF:  # Drive API Fields
-    DEFAULT_FIELDS = ("id", "parents", "name", "size", "viewedByMeTime", "createdTime", "modifiedTime", "mimeType", "trashed", "md5Checksum")
+    DEFAULT_FIELDS = ("id", "parents", "name", "size", "viewedByMeTime", "createdTime", "modifiedTime", "mimeType", "trashed", "md5Checksum", "shortcutDetails")
     ROOT_ID = "root"
     FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
