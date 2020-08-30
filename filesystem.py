@@ -30,13 +30,14 @@ class DriveFileSystem(Operations):
 
     inode_map = InodeMap()
 
-    def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool, cache_path: Path):
+    def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool, mountpoint: str, cache_path: Path):
         super().__init__()
 
         self.db = db
         self.client = client
         self.trashed = trash
 
+        self.mountpoint = mountpoint
         self.cache_path = cache_path
 
     ################################################################
@@ -56,12 +57,21 @@ class DriveFileSystem(Operations):
 
     def db2stat(self, db_file: DatabaseFile) -> pyfuse3.EntryAttributes:
         is_dir = db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE
+        is_link = db_file[DF.MIME_TYPE] == AF.LINK_MIME_TYPE
 
         st = pyfuse3.EntryAttributes()
+        if is_dir:
+            st.st_mode = stat.S_IFDIR | 0o755
+            st.st_size = 0
+        elif is_link:
+            st.st_mode = stat.S_IFLNK | 0o777
+            st.st_size = 40
+        else:
+            st.st_mode = stat.S_IFREG | 0o644
+            st.st_size = db_file[DF.FILE_SIZE]
+
         st.st_ino = self.inode_map.path2inode(db_file[DF.PATH])
-        st.st_mode = stat.S_IFDIR | 0o755 if is_dir else stat.S_IFREG | 0o644
         st.st_nlink = 1
-        st.st_size = 0 if is_dir else db_file[DF.FILE_SIZE]
         st.st_blocks = int((st.st_size + 511) / 512)
         st.st_atime_ns = float(db_file[DF.ATIME] - time.timezone) * 10**9
         st.st_mtime_ns = float(db_file[DF.MTIME] - time.timezone) * 10**9
@@ -88,6 +98,7 @@ class DriveFileSystem(Operations):
         ctime = google_datetime_to_timestamp(file["createdTime"])  # TODO ctime is not creation time
         mtime = google_datetime_to_timestamp(file["modifiedTime"])
         mime_type = file["mimeType"]
+        target_id = file["shortcutDetails"]["targetId"] if "shortcutDetails" in file.keys() else None
         trashed = file["trashed"]
         md5 = file["md5Checksum"] if "md5Checksum" in file.keys() else None
 
@@ -100,6 +111,7 @@ class DriveFileSystem(Operations):
             DF.CTIME: ctime,
             DF.MTIME: mtime,
             DF.MIME_TYPE: mime_type,
+            DF.TARGET_ID: target_id,
             DF.TRASHED: trashed,
             DF.MD5: md5
         })
@@ -131,7 +143,7 @@ class DriveFileSystem(Operations):
         drive_files = self.exec_query(q=q)
         drive_files = list(filter(lambda drive_file: "parents" in drive_file.keys(), drive_files))  # No orphans allowed
 
-        # Get parent dir and add to db
+        # Get root and add to db
         db_file = self.drive2db(self.client.get_by_id(id=AF.ROOT_ID))
         self.db.new_file(db_file)
         added_ids = [db_file[DF.ID]]
@@ -323,6 +335,34 @@ class DriveFileSystem(Operations):
                 raise FileNotFoundError(f"'{path}' does not exist")
 
             return self.db2stat(db_file)
+
+        except FileNotFoundError as err:
+            LOGGER.error(err)
+            raise FUSEError(errno.ENOENT)
+
+    async def symlink(self, inode_p: int, name: bytes, target, ctx):  # TODO links
+        pass
+
+    async def readlink(self, inode: int, ctx) -> bytes:
+        try:
+            try:
+                path = self.inode_map[inode]
+            except KeyError:
+                raise FileNotFoundError(f"Inode ({inode}) does not exist")
+
+            # Check link
+            db_file = self.get_db_file(path)
+            if db_file is None:
+                raise FileNotFoundError(f"Link '{path}' does not exist")
+
+            # Handle link target
+            target_db_file = self.db.get_file(**{DF.ID: db_file[DF.TARGET_ID]})
+            if target_db_file is None:  # Invalid link
+                target_path = Path(self.mountpoint).joinpath(db_file[DF.PATH][1:])
+            else:
+                target_path = Path(self.mountpoint).joinpath(target_db_file[DF.PATH][1:])
+
+            return os.fsencode(target_path)
 
         except FileNotFoundError as err:
             LOGGER.error(err)

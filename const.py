@@ -23,6 +23,7 @@ class DF:  # Database Fields
     CTIME = "ctime"
     MTIME = "mtime"
     MIME_TYPE = "mime_type"
+    TARGET_ID = 'target_id'
     TRASHED = "trashed"
     MD5 = "md5"
     FILES_HEADERS = {ID: "TEXT NOT NULL UNIQUE",
@@ -33,6 +34,7 @@ class DF:  # Database Fields
                      CTIME: "INTEGER NOT NULL",
                      MTIME: "INTEGER NOT NULL",
                      MIME_TYPE: "TEXT NOT NULL",
+                     TARGET_ID: "TEXT",
                      TRASHED: "BOOLEAN NOT NULL",
                      MD5: "TEXT"}
 
@@ -41,6 +43,7 @@ class AF:  # Drive API Fields
     DEFAULT_FIELDS = ("id", "parents", "name", "size", "viewedByMeTime", "createdTime", "modifiedTime", "mimeType", "trashed", "md5Checksum", "shortcutDetails")
     ROOT_ID = "root"
     FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+    LINK_MIME_TYPE = "application/vnd.google-apps.shortcut"
 
     GOOGLE_APP_MIME_TYPES = [
         "application/vnd.google-apps.document",
