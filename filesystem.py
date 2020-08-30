@@ -469,28 +469,57 @@ class DriveFileSystem(Operations):
             LOGGER.error(err)
             raise FUSEError(errno.EEXIST)
 
-    def _remove(self, path: str) -> str:
-        db_file = self.get_db_file(path)
+    def _remove(self, db_file: DatabaseFile) -> str:
         if db_file[DF.TRASHED]:
             self.client.untrash_file(id=db_file[DF.ID])
         else:
             self.client.trash_file(id=db_file[DF.ID])
         return db_file[DF.ID]
 
-    async def rmdir(self, parent_inode, name, ctx):
-        raise FUSEError(errno.EIO)
-        LOGGER.info(f"Removing directory '{path}'")
+    async def rmdir(self, inode_p: int, name: bytes, ctx):
+        try:
+            try:
+                path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
+            except KeyError:
+                raise FileNotFoundError(f"Parent inode ({inode_p}) does not exist")
+            LOGGER.info(f"Removing directory '{path}'")
 
-        id = self._remove(path)
-        self.db.delete_file_children(id=id)
-        self.db.delete_file(id=id)
+            db_file = self.get_db_file(str(path))
+            if db_file is None:
+                raise FileNotFoundError(f"'{path}' does not exist")
 
-    async def unlink(self, parent_inode, name, ctx):
-        raise FUSEError(errno.EIO)
-        LOGGER.info(f"Removing file '{path}'")
+            id = self._remove(db_file)
+            # self.db.delete_file_children(id=id)
+            self.db.delete_file(id=id)
 
-        id = self._remove(path)
-        self.db.delete_file(id=id)
+        except FileNotFoundError as err:
+            LOGGER.error(err)
+            raise FUSEError(errno.ENOENT)
+        except FileExistsError as err:
+            LOGGER.error(err)
+            raise FUSEError(errno.EEXIST)
+
+    async def unlink(self, inode_p: int, name: bytes, ctx):
+        try:
+            try:
+                path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
+            except KeyError:
+                raise FileNotFoundError(f"Parent inode ({inode_p}) does not exist")
+            LOGGER.info(f"Removing file '{path}'")
+
+            db_file = self.get_db_file(str(path))
+            if db_file is None:
+                raise FileNotFoundError(f"'{path}' does not exist")
+
+            id = self._remove(db_file)
+            self.db.delete_file(id=id)
+
+        except FileNotFoundError as err:
+            LOGGER.error(err)
+            raise FUSEError(errno.ENOENT)
+        except FileExistsError as err:
+            LOGGER.error(err)
+            raise FUSEError(errno.EEXIST)
 
     ################################################################
     # File ops
