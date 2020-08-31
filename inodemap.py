@@ -77,6 +77,10 @@ class InodeMap:
         :param inode: Inode to remove
         :return: Path of removed inode
         """
+        # Skip root
+        if inode == pyfuse3.ROOT_INODE:
+            return self[inode]
+
         self._lock.acquire()
         try:
             return self._pop(inode)

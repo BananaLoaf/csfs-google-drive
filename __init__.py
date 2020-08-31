@@ -83,7 +83,7 @@ class GoogleDriveProfile(Profile):
         ops = DriveFileSystem(db=db,
                               client=self.client,
                               trash=self.config[CF.MOUNT_SECTION][CF.TRASH],
-                              mountpoint=self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT],
+                              mountpoint=Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT]),
                               cache_path=self.cache_path)
 
         mountpoint = Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT])

@@ -24,13 +24,7 @@ def google_datetime_to_timestamp(datetime_str: str) -> int:
 
 
 class DriveFileSystem(Operations):
-    _statfs: pyfuse3.StatvfsData
-
-    download_lock = threading.Lock()
-
-    inode_map = InodeMap()
-
-    def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool, mountpoint: str, cache_path: Path):
+    def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool, mountpoint: Path, cache_path: Path):
         super().__init__()
 
         self.db = db
@@ -49,7 +43,7 @@ class DriveFileSystem(Operations):
             raise FUSEError(errno.EIO)
 
     def get_db_file(self, path: str) -> Optional[DatabaseFile]:
-        if path == "/":
+        if path == self.inode_map[pyfuse3.ROOT_INODE]:
             db_file = self.db.get_file(**{DF.PATH: path})
         else:
             db_file = self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
@@ -126,14 +120,15 @@ class DriveFileSystem(Operations):
 
         return drive_files
 
+    ################################################################
     # Listing
     def recursive_listdir(self, path: str):
         LOGGER.debug(f"Recursively listing '{path}'")
-        if path == "/":
+        if path == self.inode_map[pyfuse3.ROOT_INODE]:
             self._recursive_list_root()
         else:
-            parent_id = self.get_db_file(path=path)[DF.ID]
-            self._recursive_list_any(parent_id=parent_id)
+            db_file = self.get_db_file(path=path)
+            self._recursive_list_any(parent_id=db_file[DF.ID])
 
     def _recursive_list_root(self):
         q = f"'me' in owners and trashed={str(self.trashed).lower()}"
@@ -238,6 +233,8 @@ class DriveFileSystem(Operations):
 
     ################################################################
     # Downloading and uploading related
+    download_lock = threading.Lock()
+
     def download_file(self, db_file: DatabaseFile):
         output_file = Path(self.cache_path, db_file[DF.MD5]).with_suffix(".dpart")
         while True:
@@ -260,6 +257,9 @@ class DriveFileSystem(Operations):
 
     ################################################################
     # FS ops
+    _statfs: pyfuse3.StatvfsData
+    inode_map = InodeMap()
+
     def init(self):
         LOGGER.info(f"Initiating filesystem")
 
@@ -280,7 +280,7 @@ class DriveFileSystem(Operations):
         # self._statfs.f_flag = 0,  # Mount flags
         self._statfs.f_namemax = 32767  # Maximum filename length
 
-        self.recursive_listdir("/")
+        self.recursive_listdir(self.inode_map[pyfuse3.ROOT_INODE])
 
         LOGGER.info(f"Filesystem initiated successfully")
 
@@ -298,29 +298,23 @@ class DriveFileSystem(Operations):
     async def lookup(self, inode_p: int, name: bytes, ctx: Optional[pyfuse3.RequestContext] = None):
         try:
             try:
-                parent_path = self.inode_map[inode_p]
+                path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
+                self.try2ignore(path)
             except KeyError:
                 raise FileNotFoundError(f"Parent inode ({inode_p}) does not exist")
 
-            path = Path(parent_path).joinpath(os.fsdecode(name))
-            self.try2ignore(path)
-
             db_file = self.get_db_file(str(path))
-            if db_file is not None:
-                return self.db2stat(db_file)
-            else:
+            if db_file is None:
                 raise FileNotFoundError(f"'{path}' does not exist")
+
+            return self.db2stat(db_file)
 
         except FileNotFoundError as err:
             LOGGER.error(err)
             raise FUSEError(errno.ENOENT)
 
-    async def forget(self, inode_list: list):  # Called on sleep, hibernation
+    async def forget(self, inode_list: list):  # Called on sleep, hibernation, rmdir, unlink
         for inode in inode_list:
-            # Root stays
-            if inode[0] == pyfuse3.ROOT_INODE:
-                continue
-
             try:
                 path = self.inode_map.pop(inode[0])
                 LOGGER.info(f"Forgetting '{path}' ({inode[0]})")
@@ -334,9 +328,9 @@ class DriveFileSystem(Operations):
         try:
             try:
                 path = self.inode_map[inode]
+                self.try2ignore(path)
             except KeyError:
                 raise FileNotFoundError(f"Inode ({inode}) does not exist")
-            self.try2ignore(path)
 
             db_file = self.get_db_file(path)
             if db_file is None:
@@ -366,10 +360,11 @@ class DriveFileSystem(Operations):
             # Handle link target
             target_db_file = self.db.get_file(**{DF.ID: db_file[DF.TARGET_ID]})
             if target_db_file is None:  # Invalid link
-                target_path = Path(self.mountpoint).joinpath(db_file[DF.PATH][1:])
+                target_path = Path(db_file[DF.PATH])
             else:
-                target_path = Path(self.mountpoint).joinpath(target_db_file[DF.PATH][1:])
+                target_path = Path(target_db_file[DF.PATH])
 
+            target_path = self.mountpoint / target_path.relative_to(target_path.root)
             return os.fsencode(target_path)
 
         except FileNotFoundError as err:

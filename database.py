@@ -8,7 +8,7 @@ class DatabaseFile(DatabaseItem):
     headers = DF.FILES_HEADERS
 
 
-class DriveDatabase(Database):  # TODO add trigger for new files
+class DriveDatabase(Database):
     files_table = "files"
 
     def __init__(self, *args, **kwargs):
