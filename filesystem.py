@@ -39,6 +39,10 @@ class FUSEFileExistsError(FUSEETemplate):
     en = errno.EEXIST
 
 
+class FUSECrossDeviceLink(FUSEETemplate):
+    en = errno.EXDEV
+
+
 class DriveFileSystem(Operations):
     def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool, mountpoint: Path, cache_path: Path):
         super().__init__()
@@ -80,7 +84,7 @@ class DriveFileSystem(Operations):
             st.st_mode = stat.S_IFREG | 0o644
             st.st_size = db_file[DF.FILE_SIZE]
 
-        st.st_ino = self.inode_map.path2inode(db_file[DF.PATH])
+        st.st_ino = self.inode_map.get_or_add(db_file[DF.PATH])
         st.st_nlink = 1
         st.st_blocks = int((st.st_size + 511) / 512)
         st.st_atime_ns = float(db_file[DF.ATIME] - time.timezone) * 10**9
@@ -348,12 +352,34 @@ class DriveFileSystem(Operations):
 
         return self.db2stat(db_file)
 
-    async def symlink(self, inode_p: int, name: bytes, source_path: bytes, ctx: Optional[pyfuse3.RequestContext] = None):  # TODO links
-        source_path = Path(os.fsdecode(source_path)).relative_to(self.mountpoint)
+    async def symlink(self, inode_p: int, name: bytes, target_path: bytes, ctx: Optional[pyfuse3.RequestContext] = None):
+        target_path = Path(os.fsdecode(target_path))
+        if not target_path.is_absolute():
+            raise FUSEFileNotFoundError(f"symlink, target path '{target_path}' is not absolute")
+
+        if self.mountpoint not in list(target_path.parents):
+            raise FUSECrossDeviceLink(f"symlink, invalid target path '{target_path}', cross-device link")
+        target_path = Path(self.inode_map[pyfuse3.ROOT_INODE]) / target_path.relative_to(self.mountpoint)
+
         try:
-            target_path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
+            link_path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
         except KeyError:
-            raise FUSEFileNotFoundError(f"symlink, parent inode ({inode_p}) does not exist")
+            raise FUSEFileNotFoundError(f"symlink, symlink parent inode ({inode_p}) does not exist")
+
+        db_file_target = self.get_db_file(str(target_path))
+        if db_file_target is None:
+            raise FUSEFileNotFoundError(f"symlink, '{target_path}' does not exists")
+        db_file_link = self.get_db_file(str(link_path))
+        if db_file_link is not None:
+            raise FUSEFileExistsError(f"symlink, '{link_path}' already exists")
+
+        db_file_link_parent = self.get_db_file(str(link_path.parent))
+        drive_file = self.client.create_shortcut(parent_id=db_file_link_parent[DF.ID],
+                                                 name=link_path.name,
+                                                 target_id=db_file_target[DF.ID])
+        db_file = self.drive2db(drive_file)
+        self.db.new_file(db_file)
+        return self.db2stat(db_file)
 
     async def readlink(self, inode: int, ctx: Optional[pyfuse3.RequestContext] = None) -> bytes:
         try:

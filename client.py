@@ -221,6 +221,27 @@ class DriveClient:
 
     # @is_connected
     # @lock
+    def create_shortcut(self, parent_id: str, name: str, target_id: str,
+                        fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> DriveFile:
+        """
+        :param parent_id: Shortcuts's parent
+        :param name: Shortcut's name
+        :param target_id: ID of a file, shortcut is referring to
+        :param fields: Fields to return after creation, pass None to get all file fields, for custom fields refer to https://developers.google.com/drive/api/v3/reference/files
+        :return: DriveFile of newly created shortcut
+        """
+        file_metadata = {
+            "name": name,
+            "mimeType": AF.LINK_MIME_TYPE,
+            "parents": [parent_id],
+            "shortcutDetails": {"targetId": target_id}
+        }
+        file = self.service.files().create(body=file_metadata,
+                                           fields="*" if fields is None else ','.join(fields)).execute(num_retries=1)
+        return DriveFile(**file)
+
+    # @is_connected
+    # @lock
     def trash_file(self, id: str):
         """https://developers.google.com/drive/api/v3/reference/files/update"""
         self.service.files().update(fileId=id, body={"trashed": True}).execute(num_retries=1)

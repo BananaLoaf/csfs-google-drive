@@ -37,7 +37,7 @@ class InodeMap:
         finally:
             self._lock.release()
 
-    def path2inode(self, path: str):
+    def get_or_add(self, path: str):
         """
         :return: Inode for path, if inode does not exist, it is added
         """
