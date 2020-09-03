@@ -93,6 +93,14 @@ class DriveFileSystem(Operations):
 
         return st
 
+    def inode2file_info(self, inode: int) -> pyfuse3.FileInfo:
+        fi = pyfuse3.FileInfo()
+        fi.direct_io = True
+        fi.fh = "aaaaa"
+        fi.keep_cache = True
+        fi.nonseekable = False
+        return fi
+
     def drive2db(self, file: DriveFile) -> DatabaseFile:
         id = file["id"]
         parent_id = file["parents"][0] if "parents" in file.keys() else None
@@ -537,22 +545,27 @@ class DriveFileSystem(Operations):
         raise FUSEError(errno.EROFS)
         return 0
 
-    async def open(self, inode, flags, ctx) -> int:
-        raise FUSEError(errno.EIO)
+    async def open(self, inode: int, flags: int, ctx: Optional[pyfuse3.RequestContext] = None) -> pyfuse3.FileInfo:
+        try:
+            path = Path(self.inode_map[inode])
+        except KeyError:
+            raise FUSEFileNotFoundError(f"open, inode ({inode}) does not exist")
+
         mode = flag2mode(flags)
-        LOGGER.info(f"Opening '{path}' in '{mode}' mode ({flags})")
+        LOGGER.info(f"open, '{path}' - '{mode}' ({flags})")
 
         # Download
         if "r" in mode or "a" in mode:
-            db_file = self.get_db_file(path)
+            db_file = self.get_db_file(str(path))
+            if db_file is None:
+                raise FUSEFileNotFoundError(f"open, '{path}' does not exist")
 
             # Files
             if db_file[DF.MIME_TYPE] not in AF.GOOGLE_APP_MIME_TYPES:
                 try:
-                    assert self.is_cached(db_file[DF.MD5]), f"No cache found for '{path}'"
-                    assert self.check_filesize(md5=db_file[DF.MD5], dest_filesize=db_file[DF.FILE_SIZE]), f"Cache filesize mismatch for '{path}'"
-                    # TODO Validate cache if config says so
-                    return 0
+                    assert self.is_cached(db_file[DF.MD5]), f"open, '{path}' no cache"
+                    assert self.check_filesize(md5=db_file[DF.MD5], dest_filesize=db_file[DF.FILE_SIZE]), f"open, '{path}' cache filesize mismatch"
+                    return self.inode2file_info(inode)
 
                 except AssertionError as err:
                     LOGGER.debug(err)
@@ -560,17 +573,23 @@ class DriveFileSystem(Operations):
                     self.download_lock.acquire()
                     self.download_file(db_file)
                     self.download_lock.release()
-                    return 0
+                    return self.inode2file_info(inode)
 
             # Google Apps
             else:
-                return 0
+                raise FUSEError(errno.EIO)
 
-        return 0
-
-    async def read(self, fh, off, size) -> bytes:
         raise FUSEError(errno.EIO)
-        db_file = self.get_db_file(path)
+
+    async def read(self, fh: int, offset: int, size: int) -> bytes:
+        try:
+            path = Path(self.inode_map[fh])
+        except KeyError:
+            raise FUSEFileNotFoundError(f"read, inode ({fh}) does not exist")
+
+        db_file = self.get_db_file(str(path))
+        if db_file is None:
+            raise FUSEFileNotFoundError(f"read, '{path}' does not exist")
 
         # Files
         if db_file[DF.MIME_TYPE] not in AF.GOOGLE_APP_MIME_TYPES:
@@ -580,7 +599,7 @@ class DriveFileSystem(Operations):
 
         # Google Apps
         else:
-            raise FuseOSError(errno.EIO)
+            raise FUSEError(errno.EIO)
 
     async def write(self, fh, off, buf):
         raise FUSEError(errno.EIO)
