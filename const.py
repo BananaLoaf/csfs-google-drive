@@ -6,15 +6,17 @@ class CF:  # Config Fields
 
 
 class FF:  # File System Fields
-    IGNORED_FILES = [".Trash", ".Trash-1000", "BDMV", ".xdg-volume-info", "autorun.inf", ".hidden", ".comments"]
+    IGNORED_FILES = [".Trash", ".Trash-1000", "BDMV", ".xdg-volume-info", "autorun.inf", ".hidden", ".comments", ".directory"]
 
-    DESKTOP: str = "DESKTOP"
+    WEB: str = "WEB"
     CONVERT: str = "CONVERT"
     IGNORE: str = "IGNORE"
-    GOOGLE_APP_MODES: str = [DESKTOP, CONVERT, IGNORE]
+    GOOGLE_APP_MODES: str = [WEB, CONVERT, IGNORE]
 
 
 class DF:  # Database Fields
+    ROWID = "rowid"
+
     ID = "id"
     PARENT_ID = "parent_id"
     PATH = "path"
@@ -23,6 +25,7 @@ class DF:  # Database Fields
     CTIME = "ctime"
     MTIME = "mtime"
     MIME_TYPE = "mime_type"
+    TARGET_ID = 'target_id'
     TRASHED = "trashed"
     MD5 = "md5"
     FILES_HEADERS = {ID: "TEXT NOT NULL UNIQUE",
@@ -33,14 +36,16 @@ class DF:  # Database Fields
                      CTIME: "INTEGER NOT NULL",
                      MTIME: "INTEGER NOT NULL",
                      MIME_TYPE: "TEXT NOT NULL",
+                     TARGET_ID: "TEXT",
                      TRASHED: "BOOLEAN NOT NULL",
                      MD5: "TEXT"}
 
 
 class AF:  # Drive API Fields
-    DEFAULT_FIELDS = ("id", "parents", "name", "size", "viewedByMeTime", "createdTime", "modifiedTime", "mimeType", "trashed", "md5Checksum")
+    DEFAULT_FIELDS = ("id", "parents", "name", "size", "viewedByMeTime", "createdTime", "modifiedTime", "mimeType", "trashed", "md5Checksum", "shortcutDetails")
     ROOT_ID = "root"
     FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+    LINK_MIME_TYPE = "application/vnd.google-apps.shortcut"
 
     GOOGLE_APP_MIME_TYPES = [
         "application/vnd.google-apps.document",
