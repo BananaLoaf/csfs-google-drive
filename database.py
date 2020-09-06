@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from CloudStorageFileSystem.utils.database import Database, DatabaseItem, eval_kwargs
 from .const import DF
@@ -36,18 +36,21 @@ class DriveDatabase(Database):
         self._executemany(query, values)
 
     @eval_kwargs(DatabaseFile)
-    def get_file(self, **kwargs) -> Optional[DatabaseFile]:
-        query = f"SELECT * FROM '{self.files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
+    def get_file(self, **kwargs) -> Tuple[int, DatabaseFile]:
+        query = f"SELECT rowid,* FROM '{self.files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
         values = list(kwargs.values())
         item = self._execute_fetchone(query, values)
-        return DatabaseFile.from_list(item) if item else None
+        if item is not None:
+            return item[0], DatabaseFile.from_list(item[1:])
+        else:
+            raise ValueError
 
     @eval_kwargs(DatabaseFile)
-    def get_files(self, **kwargs) -> Optional[List[DatabaseFile]]:
-        query = f"SELECT * FROM '{self.files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
+    def get_files(self, **kwargs) -> List[Tuple[int, DatabaseFile]]:
+        query = f"SELECT rowid,* FROM '{self.files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
         values = list(kwargs.values())
         items = self._execute_fetchall(query, values)
-        return [DatabaseFile.from_list(row) for row in items]
+        return [(item[0], DatabaseFile.from_list(item[1:])) for item in items]
 
     def delete_file_children(self, id: str):
         ids = [id]
@@ -55,7 +58,7 @@ class DriveDatabase(Database):
             db_files = self.get_files(**{DF.PARENT_ID: ids[0]})
             ids.pop(0)
 
-            for db_file in db_files:
+            for rowid, db_file in db_files:
                 ids.append(db_file[DF.ID])
                 self.delete_file(id=db_file[DF.ID])
 
