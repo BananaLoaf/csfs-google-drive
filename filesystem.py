@@ -13,7 +13,6 @@ from pathlib import Path
 
 from CloudStorageFileSystem.utils.operations import flag2mode
 from CloudStorageFileSystem.logger import LOGGER
-from .inodemap import InodeMap
 from .client import DriveClient, DriveFile
 from .database import DriveDatabase, DatabaseFile
 from .const import DF, AF, FF
@@ -62,14 +61,13 @@ class DriveFileSystem(Operations):
         if path.name in FF.IGNORED_FILES:
             raise FUSEError(errno.EIO)
 
-    def get_db_file(self, path: str) -> Optional[DatabaseFile]:
-        if path == self.inode_map[pyfuse3.ROOT_INODE]:
-            db_file = self.db.get_file(**{DF.PATH: path})
+    def get_db_file(self, path: str) -> Tuple[int, DatabaseFile]:
+        if path == "/":
+            return self.db.get_file(**{DF.PATH: path})
         else:
-            db_file = self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
-        return db_file
+            return self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
 
-    def db2stat(self, db_file: DatabaseFile) -> pyfuse3.EntryAttributes:
+    def db2stat(self, rowid: int, db_file: DatabaseFile) -> pyfuse3.EntryAttributes:
         is_dir = db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE
         is_link = db_file[DF.MIME_TYPE] == AF.LINK_MIME_TYPE
 
@@ -84,7 +82,7 @@ class DriveFileSystem(Operations):
             st.st_mode = stat.S_IFREG | 0o644
             st.st_size = db_file[DF.FILE_SIZE]
 
-        st.st_ino = self.inode_map.get_or_add(db_file[DF.PATH])
+        st.st_ino = rowid
         st.st_nlink = 1
         st.st_blocks = int((st.st_size + 511) / 512)
         st.st_atime_ns = float(db_file[DF.ATIME] - time.timezone) * 10**9
@@ -93,10 +91,10 @@ class DriveFileSystem(Operations):
 
         return st
 
-    def inode2file_info(self, inode: int) -> pyfuse3.FileInfo:
+    def get_file_info(self, inode: int) -> pyfuse3.FileInfo:
         fi = pyfuse3.FileInfo()
         fi.direct_io = True
-        fi.fh = "aaaaa"
+        fi.fh = inode
         fi.keep_cache = True
         fi.nonseekable = False
         return fi
@@ -109,7 +107,7 @@ class DriveFileSystem(Operations):
             path = "/"
         else:
             kwargs = {DF.ID: parent_id} if parent_id == AF.ROOT_ID else {DF.ID: parent_id, DF.TRASHED: self.trashed}
-            parent_db_file = self.db.get_file(**kwargs)
+            rowid, parent_db_file = self.db.get_file(**kwargs)
             path = str(Path(parent_db_file[DF.PATH], file["name"]))
 
         file_size = file["size"] if "size" in file.keys() else 0
@@ -152,10 +150,10 @@ class DriveFileSystem(Operations):
     # Listing
     def recursive_listdir(self, path: str):
         LOGGER.debug(f"Recursively listing '{path}'")
-        if path == self.inode_map[pyfuse3.ROOT_INODE]:
+        if path == "/":
             self._recursive_list_root()
         else:
-            db_file = self.get_db_file(path=path)
+            rowid, db_file = self.get_db_file(path=path)
             self._recursive_list_any(parent_id=db_file[DF.ID])
 
     def _recursive_list_root(self):
@@ -225,20 +223,20 @@ class DriveFileSystem(Operations):
                 q = " or ".join([f"'{id}' in parents" for id in ids_chunk]) + f" and trashed={str(self.trashed).lower()}"
                 drive_files += self.exec_query(q=q)
 
-    def listdir(self, path: str):
-        LOGGER.debug(f"Listing '{path}'")
-        parent_id = AF.ROOT_ID if path == "/" else self.get_db_file(path=path)[DF.ID]
-        try:
-            LOGGER.debug(f"Updating files inside '{path}' - '{parent_id}'")
-            q = f"'{parent_id}' in parents and trashed={str(self.trashed).lower()}"
-            drive_files = self.exec_query(q=q)
-            drive_files.append(self.client.get_by_id(id=parent_id))
-
-            db_files = [self.drive2db(drive_file) for drive_file in drive_files]
-            self.db.new_files(db_files)
-
-        except ConnectionError as err:
-            LOGGER.error(err)
+    # def listdir(self, path: str):
+    #     LOGGER.debug(f"Listing '{path}'")
+    #     parent_id = AF.ROOT_ID if path == "/" else self.get_db_file(path=path)[DF.ID]
+    #     try:
+    #         LOGGER.debug(f"Updating files inside '{path}' - '{parent_id}'")
+    #         q = f"'{parent_id}' in parents and trashed={str(self.trashed).lower()}"
+    #         drive_files = self.exec_query(q=q)
+    #         drive_files.append(self.client.get_by_id(id=parent_id))
+    #
+    #         db_files = [self.drive2db(drive_file) for drive_file in drive_files]
+    #         self.db.new_files(db_files)
+    #
+    #     except ConnectionError as err:
+    #         LOGGER.error(err)
 
     ################################################################
     # Cache handling
@@ -286,7 +284,6 @@ class DriveFileSystem(Operations):
     ################################################################
     # FS ops
     _statfs: pyfuse3.StatvfsData
-    inode_map = InodeMap()
 
     def init(self):
         LOGGER.info(f"Initiating filesystem")
@@ -308,7 +305,7 @@ class DriveFileSystem(Operations):
         # self._statfs.f_flag = 0,  # Mount flags
         self._statfs.f_namemax = 32767  # Maximum filename length
 
-        self.recursive_listdir(self.inode_map[pyfuse3.ROOT_INODE])
+        self.recursive_listdir("/")
 
         LOGGER.info(f"Filesystem initiated successfully")
 
@@ -323,186 +320,171 @@ class DriveFileSystem(Operations):
 
     ################################################################
     # Main ops
-    async def lookup(self, inode_p: int, name: bytes, ctx: Optional[pyfuse3.RequestContext] = None):
+    async def lookup(self, inode_p: int, name: bytes, ctx: pyfuse3.RequestContext):
         try:
-            path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
+            rowid, db_file_p = self.db.get_file(**{DF.ROWID: inode_p})
+            path = Path(db_file_p[DF.PATH]).joinpath(os.fsdecode(name))
             self.try2ignore(path)
-        except KeyError:
+        except ValueError:
             raise FUSEFileNotFoundError(f"lookup, parent inode ({inode_p}) does not exist")
 
-        db_file = self.get_db_file(str(path))
-        if db_file is None:
+        try:
+            rowid, db_file = self.get_db_file(str(path))
+            return self.db2stat(rowid, db_file)
+        except ValueError:
             raise FUSEFileNotFoundError(f"lookup, '{path}' does not exist")
 
-        return self.db2stat(db_file)
-
-    async def forget(self, inode_list: list):  # Called on sleep, hibernation, rmdir, unlink
-        for inode in inode_list:
-            try:
-                path = self.inode_map.pop(inode[0])
-                LOGGER.info(f"forget '{path}' ({inode[0]})")
-            except KeyError:
-                LOGGER.error(f"forget, inode ({inode[0]}) does not exist")
-
-    # async def setattr(self, inode, attr, fields, fh, ctx):
-    #     pass
-
-    async def getattr(self, inode: int, ctx: Optional[pyfuse3.RequestContext] = None) -> pyfuse3.EntryAttributes:
+    async def getattr(self, inode: int, ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
         try:
-            path = self.inode_map[inode]
-            self.try2ignore(path)
-        except KeyError:
+            rowid, db_file = self.db.get_file(**{DF.ROWID: inode})
+            self.try2ignore(db_file[DF.PATH])
+            return self.db2stat(rowid, db_file)
+
+        except ValueError:
             raise FUSEFileNotFoundError(f"getattr, inode ({inode}) does not exist")
 
-        db_file = self.get_db_file(path)
-        if db_file is None:
-            raise FUSEFileNotFoundError(f"getattr, '{path}' does not exist")
-
-        return self.db2stat(db_file)
-
-    async def symlink(self, inode_p: int, name: bytes, target_path: bytes, ctx: Optional[pyfuse3.RequestContext] = None):
+    async def symlink(self, inode_p: int, name: bytes, target_path: bytes, ctx: pyfuse3.RequestContext):
+        # Check if target_path is absolute
         target_path = Path(os.fsdecode(target_path))
         if not target_path.is_absolute():
             raise FUSEFileNotFoundError(f"symlink, target path '{target_path}' is not absolute")
 
+        # Check if under mountpoint
         if self.mountpoint not in list(target_path.parents):
             raise FUSECrossDeviceLink(f"symlink, invalid target path '{target_path}', cross-device link")
-        target_path = Path(self.inode_map[pyfuse3.ROOT_INODE]) / target_path.relative_to(self.mountpoint)
+        target_path = Path("/") / target_path.relative_to(self.mountpoint)
 
+        # Get link path
         try:
-            link_path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
-        except KeyError:
+            rowid, db_file_p_link = self.db.get_file(**{DF.ROWID: inode_p})
+            link_path = Path(db_file_p_link[DF.PATH]).joinpath(os.fsdecode(name))
+        except ValueError:
             raise FUSEFileNotFoundError(f"symlink, symlink parent inode ({inode_p}) does not exist")
 
-        db_file_target = self.get_db_file(str(target_path))
-        if db_file_target is None:
+        # Check existence and non existence
+        try:
+            rowid, db_file_target = self.get_db_file(str(target_path))
+        except ValueError:
             raise FUSEFileNotFoundError(f"symlink, '{target_path}' does not exists")
-        db_file_link = self.get_db_file(str(link_path))
-        if db_file_link is not None:
+        try:
+            self.get_db_file(str(link_path))
             raise FUSEFileExistsError(f"symlink, '{link_path}' already exists")
+        except ValueError:
+            pass
 
-        db_file_link_parent = self.get_db_file(str(link_path.parent))
-        drive_file = self.client.create_shortcut(parent_id=db_file_link_parent[DF.ID],
+        # Create shortcut
+        LOGGER.info(f"symlink '{link_path}' -> '{target_path}'")
+        drive_file = self.client.create_shortcut(parent_id=db_file_p_link[DF.ID],
                                                  name=link_path.name,
                                                  target_id=db_file_target[DF.ID])
-        db_file = self.drive2db(drive_file)
-        self.db.new_file(db_file)
-        return self.db2stat(db_file)
+        db_file_new = self.drive2db(drive_file)
+        self.db.new_file(db_file_new)
 
-    async def readlink(self, inode: int, ctx: Optional[pyfuse3.RequestContext] = None) -> bytes:
+        rowid, db_file = self.get_db_file(db_file_new[DF.PATH])
+        return self.db2stat(rowid, db_file)
+
+    async def readlink(self, inode: int, ctx: pyfuse3.RequestContext) -> bytes:
         try:
-            path = self.inode_map[inode]
-        except KeyError:
+            rowid, db_file = self.db.get_file(**{DF.ROWID: inode})
+        except ValueError:
             raise FUSEFileNotFoundError(f"readlink, inode ({inode}) does not exist")
 
-        # Check link
-        db_file = self.get_db_file(path)
-        if db_file is None:
-            raise FUSEFileNotFoundError(f"readlink, link '{path}' does not exist")
-
         # Handle link target
-        target_db_file = self.db.get_file(**{DF.ID: db_file[DF.TARGET_ID]})
-        if target_db_file is None:  # Invalid link
+        try:
+            rowid, db_file_target = self.db.get_file(**{DF.ID: db_file[DF.TARGET_ID]})
+            target_path = Path(db_file_target[DF.PATH])
+        except ValueError:  # Invalid link
             target_path = Path(db_file[DF.PATH])
-        else:
-            target_path = Path(target_db_file[DF.PATH])
 
         # Replace target_path's root with mountpoint
         target_path = self.mountpoint / target_path.relative_to(target_path.root)
         return os.fsencode(target_path)
 
-    async def opendir(self, inode: int, ctx: Optional[pyfuse3.RequestContext] = None):
+    async def opendir(self, inode: int, ctx: pyfuse3.RequestContext):
         return inode
-
-    # async def releasedir(self, fh: int):
-    #     pass
 
     async def readdir(self, inode: int, start_id: int, token: pyfuse3.ReaddirToken):
         try:
-            path = self.inode_map[inode]
-        except KeyError:
+            rowid, db_file = self.db.get_file(**{DF.ROWID: inode})
+            path = db_file[DF.PATH]
+        except ValueError:
             raise FUSEFileNotFoundError(f"readdir, inode ({inode}) does not exist")
-
-        db_file = self.get_db_file(path)
-        if db_file is None:
-            raise FUSEFileNotFoundError(f"readdir, '{path}' does not exist")
 
         LOGGER.info(f"readdir '{path}'")
         db_files = self.db.get_files(**{DF.PARENT_ID: db_file[DF.ID], DF.TRASHED: self.trashed})
 
         # List all entries and sort them by inode
         entries = []
-        for db_file in db_files:
+        for rowid, db_file in db_files:
             name = os.fsencode(Path(db_file[DF.PATH]).name)
-            stat = self.db2stat(db_file)
-            inode = stat.st_ino
-            entries.append((name, stat, inode))
-
-        # Sort entries by inode
-        entries = list(sorted(entries, key=lambda e: e[2]))
+            stat = self.db2stat(rowid, db_file)
+            entries.append((name, stat))
+        entries = sorted(entries, key=lambda row: row[1].st_ino)
 
         # Take only new entries if start_id > 0, new entries are guaranteed to be at the end
-        for args in entries[start_id - 1 if start_id > 0 else start_id:]:
-            if not pyfuse3.readdir_reply(token, *args):
+        for name, stat in list(entries)[start_id - 1 if start_id > 0 else start_id:]:
+            if not pyfuse3.readdir_reply(token, name, stat, stat.st_ino):
                 break
 
-    async def rename(self, inode_p: int, name: bytes, inode_p_new: int, name_new: bytes, flags: int, ctx: Optional[pyfuse3.RequestContext] = None):
+    async def rename(self, inode_p_old: int, name: bytes, inode_p_new: int, name_new: bytes, flags: int, ctx: pyfuse3.RequestContext):
         try:
-            path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
-        except KeyError:
-            raise FUSEFileNotFoundError(f"rename, parent inode ({inode_p}) does not exist")
+            rowid, db_file_p_old = self.db.get_file(**{DF.ROWID: inode_p_old})
+            old_path = Path(db_file_p_old[DF.PATH]).joinpath(os.fsdecode(name))
+        except ValueError:
+            raise FUSEFileNotFoundError(f"rename, parent inode ({inode_p_old}) does not exist")
+
         try:
-            path_new = Path(self.inode_map[inode_p_new]).joinpath(os.fsdecode(name_new))
-        except KeyError:
-            raise FUSEFileNotFoundError(f"rename, new parent inode ({inode_p}) does not exist")
+            rowid, db_file_p_new = self.db.get_file(**{DF.ROWID: inode_p_new})
+            new_path = Path(db_file_p_new[DF.PATH]).joinpath(os.fsdecode(name_new))
+        except ValueError:
+            raise FUSEFileNotFoundError(f"rename, new parent inode ({inode_p_new}) does not exist")
 
         # Check existence and non existence
-        db_file = self.get_db_file(str(path))
-        if db_file is None:
-            raise FUSEFileNotFoundError(f"rename, '{path}' does not exist")
-        db_file_new = self.get_db_file(str(path_new))
-        if db_file_new is not None:
-            raise FUSEFileExistsError(f"rename, '{path_new}' already exist")
+        try:
+            db_file_old = self.get_db_file(str(old_path))
+        except ValueError:
+            raise FUSEFileNotFoundError(f"rename, '{old_path}' does not exist")
+        try:
+            self.get_db_file(str(new_path))
+            raise FUSEFileExistsError(f"rename, '{new_path}' already exist")
+        except ValueError:
+            pass
 
-        LOGGER.info(f"rename '{path}' -> '{path_new}'")
+        LOGGER.info(f"rename '{old_path}' -> '{new_path}'")
         # Renaming
-        if inode_p == inode_p_new:
-            # Rename and upadate in db
-            drive_file = self.client.rename_file(id=db_file[DF.ID], name=path_new.name)
+        if inode_p_old == inode_p_new:
+            # Rename and update in db
+            drive_file = self.client.rename_file(id=db_file_old[DF.ID], name=new_path.name)
             self.db.new_file(self.drive2db(drive_file))
 
         # Moving
         else:
-            db_file_new_parent = self.get_db_file(str(path_new.parent))
-            drive_file = self.client.move_file(file_id=db_file[DF.ID],
-                                               old_parent_id=db_file[DF.PARENT_ID],
-                                               new_parent_id=db_file_new_parent[DF.ID])
+            drive_file = self.client.move_file(file_id=db_file_old[DF.ID],
+                                               old_parent_id=db_file_old[DF.PARENT_ID],
+                                               new_parent_id=db_file_p_new[DF.ID])
             self.db.new_file(self.drive2db(drive_file))
 
-        # Pop old inode from inode_map and append new one
-        self.inode_map.pop(self.inode_map[str(path)])
-        self.inode_map.append(str(path_new))
-
-    # async def mknod(self, inode_p, name, mode, rdev, ctx):
-    #     raise FUSEError(errno.EIO)
-
-    async def mkdir(self, inode_p: int, name: bytes, mode: int, ctx: Optional[pyfuse3.RequestContext] = None) -> pyfuse3.EntryAttributes:
+    async def mkdir(self, inode_p: int, name: bytes, mode: int, ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
         try:
-            path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
+            rowid, db_file_p = self.db.get_file(**{DF.ROWID: inode_p})
+            path = Path(db_file_p[DF.PATH]).joinpath(os.fsdecode(name))
             self.try2ignore(path)
-        except KeyError:
+        except ValueError:
             raise FUSEFileNotFoundError(f"mkdir, parent inode ({inode_p}) does not exist")
 
-        db_file = self.get_db_file(str(path))
-        if db_file is not None:
+        try:
+            self.get_db_file(str(path))
             raise FUSEFileExistsError(f"mkdir, '{path}' already exists")
+        except ValueError:
+            pass
 
         LOGGER.info(f"mkdir '{path}'")
-        drive_file = self.client.create_folder(parent_id=db_file[DF.PARENT_ID], name=path.name)
+        drive_file = self.client.create_folder(parent_id=db_file_p[DF.ID], name=path.name)
         db_file = self.drive2db(drive_file)
         self.db.new_file(db_file)
 
-        return self.db2stat(db_file)
+        rowid, db_file = self.get_db_file(str(db_file[DF.PATH]))
+        return self.db2stat(rowid, db_file)
 
     def _remove(self, db_file: DatabaseFile):
         if db_file[DF.TRASHED]:
@@ -510,14 +492,16 @@ class DriveFileSystem(Operations):
         else:
             self.client.trash_file(id=db_file[DF.ID])
 
-    async def rmdir(self, inode_p: int, name: bytes, ctx: Optional[pyfuse3.RequestContext] = None):
+    async def rmdir(self, inode_p: int, name: bytes, ctx: pyfuse3.RequestContext):
         try:
-            path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
-        except KeyError:
+            rowid, db_file_p = self.db.get_file(**{DF.ROWID: inode_p})
+            path = Path(db_file_p[DF.PATH]).joinpath(os.fsdecode(name))
+        except ValueError:
             raise FUSEFileNotFoundError(f"rmdir, parent inode ({inode_p}) does not exist")
 
-        db_file = self.get_db_file(str(path))
-        if db_file is None:
+        try:
+            rowid, db_file = self.get_db_file(str(path))
+        except ValueError:
             raise FUSEFileNotFoundError(f"rmdir, '{path}' does not exist")
 
         LOGGER.info(f"rmdir '{path}'")
@@ -525,14 +509,16 @@ class DriveFileSystem(Operations):
         # self.db.delete_file_children(id=id)
         self.db.delete_file(id=db_file[DF.ID])
 
-    async def unlink(self, inode_p: int, name: bytes, ctx: Optional[pyfuse3.RequestContext] = None):
+    async def unlink(self, inode_p: int, name: bytes, ctx: pyfuse3.RequestContext):
         try:
-            path = Path(self.inode_map[inode_p]).joinpath(os.fsdecode(name))
-        except KeyError:
+            rowid, db_file_p = self.db.get_file(**{DF.ROWID: inode_p})
+            path = Path(db_file_p[DF.PATH]).joinpath(os.fsdecode(name))
+        except ValueError:
             raise FUSEFileNotFoundError(f"unlink, parent inode ({inode_p}) does not exist")
 
-        db_file = self.get_db_file(str(path))
-        if db_file is None:
+        try:
+            rowid, db_file = self.get_db_file(str(path))
+        except ValueError:
             raise FUSEFileNotFoundError(f"unlink, '{path}' does not exist")
 
         LOGGER.info(f"unlink '{path}'")
@@ -545,27 +531,24 @@ class DriveFileSystem(Operations):
         raise FUSEError(errno.EROFS)
         return 0
 
-    async def open(self, inode: int, flags: int, ctx: Optional[pyfuse3.RequestContext] = None) -> pyfuse3.FileInfo:
+    async def open(self, inode: int, flags: int, ctx: pyfuse3.RequestContext) -> pyfuse3.FileInfo:
         try:
-            path = Path(self.inode_map[inode])
-        except KeyError:
+            rowid, db_file = self.db.get_file(**{DF.ROWID: inode})
+            path = Path(db_file[DF.PATH])
+        except ValueError:
             raise FUSEFileNotFoundError(f"open, inode ({inode}) does not exist")
 
         mode = flag2mode(flags)
-        LOGGER.info(f"open, '{path}' - '{mode}' ({flags})")
+        LOGGER.info(f"open '{path}' - '{mode}' ({flags})")
 
         # Download
         if "r" in mode or "a" in mode:
-            db_file = self.get_db_file(str(path))
-            if db_file is None:
-                raise FUSEFileNotFoundError(f"open, '{path}' does not exist")
-
             # Files
             if db_file[DF.MIME_TYPE] not in AF.GOOGLE_APP_MIME_TYPES:
                 try:
                     assert self.is_cached(db_file[DF.MD5]), f"open, '{path}' no cache"
                     assert self.check_filesize(md5=db_file[DF.MD5], dest_filesize=db_file[DF.FILE_SIZE]), f"open, '{path}' cache filesize mismatch"
-                    return self.inode2file_info(inode)
+                    return self.get_file_info(inode)
 
                 except AssertionError as err:
                     LOGGER.debug(err)
@@ -573,7 +556,7 @@ class DriveFileSystem(Operations):
                     self.download_lock.acquire()
                     self.download_file(db_file)
                     self.download_lock.release()
-                    return self.inode2file_info(inode)
+                    return self.get_file_info(rowid)
 
             # Google Apps
             else:
@@ -581,15 +564,11 @@ class DriveFileSystem(Operations):
 
         raise FUSEError(errno.EIO)
 
-    async def read(self, fh: int, offset: int, size: int) -> bytes:
+    async def read(self, inode: int, offset: int, size: int) -> bytes:
         try:
-            path = Path(self.inode_map[fh])
-        except KeyError:
-            raise FUSEFileNotFoundError(f"read, inode ({fh}) does not exist")
-
-        db_file = self.get_db_file(str(path))
-        if db_file is None:
-            raise FUSEFileNotFoundError(f"read, '{path}' does not exist")
+            rowid, db_file = self.db.get_file(**{DF.ROWID: inode})
+        except ValueError:
+            raise FUSEFileNotFoundError(f"read, inode ({inode}) does not exist")
 
         # Files
         if db_file[DF.MIME_TYPE] not in AF.GOOGLE_APP_MIME_TYPES:
