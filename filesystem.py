@@ -14,7 +14,7 @@ from pathlib import Path
 from CloudStorageFileSystem.utils.operations import flag2mode
 from CloudStorageFileSystem.logger import LOGGER
 from .client import DriveClient, DriveFile
-from .database import DriveDatabase, DatabaseFile
+from .database import DriveDatabase, DatabaseFile, DatabaseDJob
 from .const import DF, AF, FF
 
 
@@ -40,6 +40,10 @@ class FUSEFileExistsError(FUSEETemplate):
 
 class FUSECrossDeviceLink(FUSEETemplate):
     en = errno.EXDEV
+
+
+class FUSEIOError(FUSEETemplate):
+    en = errno.EIO
 
 
 class DriveFileSystem(Operations):
@@ -91,10 +95,10 @@ class DriveFileSystem(Operations):
 
         return st
 
-    def get_file_info(self, inode: int) -> pyfuse3.FileInfo:
+    def get_file_info(self, fh: int) -> pyfuse3.FileInfo:
         fi = pyfuse3.FileInfo()
         fi.direct_io = True
-        fi.fh = inode
+        fi.fh = fh
         fi.keep_cache = True
         fi.nonseekable = False
         return fi
@@ -240,11 +244,14 @@ class DriveFileSystem(Operations):
 
     ################################################################
     # Cache handling
-    def is_cached(self, md5: str):
-        return self.cache_path.joinpath(md5).exists()
+    def is_cached(self, db_file: DatabaseFile) -> bool:
+        cache_file = self.cache_path.joinpath(db_file[DF.MD5])
 
-    def check_filesize(self, md5: str, dest_filesize: int):
-        return self.cache_path.joinpath(md5).stat().st_size == dest_filesize
+        res = cache_file.exists()
+        if res and db_file[DF.MIME_TYPE] not in AF.GOOGLE_APP_MIME_TYPES + [AF.FOLDER_MIME_TYPE, AF.LINK_MIME_TYPE]:
+            res *= cache_file.stat().st_size == db_file[DF.FILE_SIZE]
+
+        return res
 
     @staticmethod
     def validate_cache_file(filename: Path, md5: str):
@@ -259,11 +266,37 @@ class DriveFileSystem(Operations):
 
     ################################################################
     # Downloading and uploading related
-    download_lock = threading.Lock()
+    def download_loop(self, sleep_time: int = 0.5):
+        LOGGER.info("Download queue started")
+
+        while True:
+            for djob in self.db.get_all_djobs():
+                try:
+                    rowid, db_file = self.db.get_file(**{DF.ID: djob[DF.ID], DF.TRASHED: self.trashed})
+                except ValueError:  # No such file
+                    self.db.delete_djob(djob[DF.ID])
+                    continue
+
+                if self.is_cached(db_file):  # Already cached
+                    self.db.delete_djob(djob[DF.ID])
+                    continue
+
+                self.download_file(db_file)
+                djob[DF.STATUS] = DF.COMPLETE
+                self.db.new_djob(djob)
+
+            time.sleep(sleep_time)
 
     def download_file(self, db_file: DatabaseFile):
         output_file = Path(self.cache_path, db_file[DF.MD5]).with_suffix(".dpart")
+        output_file.unlink(missing_ok=True)
+
         while True:
+            if db_file[DF.FILE_SIZE] == 0:
+                file = output_file.open("wb")
+                file.close()
+                break
+
             LOGGER.info(f"Downloading '{db_file[DF.PATH]}'")
             with output_file.open("wb") as file:
                 self.client.download(file_id=db_file[DF.ID], output_buffer=file)
@@ -280,6 +313,25 @@ class DriveFileSystem(Operations):
 
         # Read only permissions
         new_output_file.chmod(stat.S_IREAD | stat.S_IRGRP)  # stat.S_IROTH
+
+    def request_download(self, db_file: DatabaseFile) -> DatabaseDJob:
+        djob = DatabaseDJob.from_kwargs(**{DF.ID: db_file[DF.ID], DF.STATUS: DF.WAITING})
+        self.db.new_djob(djob)
+        return djob
+
+    def await_download(self, djob: DatabaseDJob):
+        while True:
+            try:
+                if djob[DF.STATUS] == DF.COMPLETE:
+                    continue
+                elif djob[DF.STATUS] == DF.COMPLETE:
+                    break
+                elif djob[DF.STATUS] == DF.NETWORK_ERROR:
+                    raise FUSEIOError
+
+                rowid, djob = self.db.get_djob(**{DF.ID: djob[DF.ID]})
+            finally:
+                self.db.delete_djob(djob[DF.ID])
 
     ################################################################
     # FS ops
@@ -542,27 +594,22 @@ class DriveFileSystem(Operations):
         LOGGER.info(f"open '{path}' - '{mode}' ({flags})")
 
         # Download
-        if "r" in mode or "a" in mode:
+        if "r" in mode:
             # Files
             if db_file[DF.MIME_TYPE] not in AF.GOOGLE_APP_MIME_TYPES:
-                try:
-                    assert self.is_cached(db_file[DF.MD5]), f"open, '{path}' no cache"
-                    assert self.check_filesize(md5=db_file[DF.MD5], dest_filesize=db_file[DF.FILE_SIZE]), f"open, '{path}' cache filesize mismatch"
-                    return self.get_file_info(inode)
+                if not self.is_cached(db_file):
+                    LOGGER.debug(f"open, '{path}' no cache")
+                    # Queue and wait
+                    djob = self.request_download(db_file)
+                    self.await_download(djob)
 
-                except AssertionError as err:
-                    LOGGER.debug(err)
-
-                    self.download_lock.acquire()
-                    self.download_file(db_file)
-                    self.download_lock.release()
-                    return self.get_file_info(rowid)
+                return self.get_file_info(rowid)
 
             # Google Apps
             else:
-                raise FUSEError(errno.EIO)
+                raise FUSEIOError
 
-        raise FUSEError(errno.EIO)
+        raise FUSEIOError
 
     async def read(self, inode: int, offset: int, size: int) -> bytes:
         try:
@@ -580,12 +627,17 @@ class DriveFileSystem(Operations):
         else:
             raise FUSEError(errno.EIO)
 
-    async def write(self, fh, off, buf):
+    async def write(self, inode: int, offset: int, buffer: bytes):
         raise FUSEError(errno.EIO)
 
-    async def release(self, fh) -> int:
-        raise FUSEError(errno.EIO)
-        return 0
+    async def release(self, inode: int) -> int:
+        try:
+            rowid, db_file = self.db.get_file(**{DF.ROWID: inode})
+            LOGGER.debug(f"release '{db_file[DF.PATH]}'")
+            return 0
+
+        except ValueError:
+            raise FUSEFileNotFoundError(f"release, inode ({inode}) does not exist")
 
     async def flush(self, fh) -> int:
         raise FUSEError(errno.EIO)

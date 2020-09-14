@@ -1,5 +1,6 @@
 import json
 from typing import Tuple, List
+from threading import Thread
 
 from pathlib import Path
 import keyring
@@ -87,4 +88,11 @@ class GoogleDriveProfile(Profile):
                               cache_path=self.cache_path)
 
         mountpoint = Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT])
-        return ops, mountpoint, []
+
+        ths = [
+            ThreadHandler(
+                t=Thread(target=lambda: ops.download_loop()),
+                join=False)
+        ]
+
+        return ops, mountpoint, ths

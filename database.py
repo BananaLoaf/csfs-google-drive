@@ -8,8 +8,13 @@ class DatabaseFile(DatabaseItem):
     headers = DF.FILES_HEADERS
 
 
+class DatabaseDJob(DatabaseItem):
+    headers = DF.DJOBS_HEADERS
+
+
 class DriveDatabase(Database):
     files_table = "files"
+    djobs_table = "djobs"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -18,6 +23,9 @@ class DriveDatabase(Database):
         self._execute(f"CREATE INDEX IF NOT EXISTS {DF.ID}_index ON '{self.files_table}' ({DF.ID})")
         self._execute(f"CREATE INDEX IF NOT EXISTS {DF.PARENT_ID}_index ON '{self.files_table}' ({DF.PARENT_ID})")
         self._execute(f"CREATE INDEX IF NOT EXISTS {DF.PATH}_index ON '{self.files_table}' ({DF.PATH})")
+
+        self.create_table(self.djobs_table, headers=DF.DJOBS_HEADERS, reset=True)
+        self._execute(f"CREATE INDEX IF NOT EXISTS {DF.ID}_index ON '{self.djobs_table}' ({DF.ID})")
 
     ################################################################
     # Files
@@ -64,4 +72,32 @@ class DriveDatabase(Database):
 
     def delete_file(self, id: str):
         query = f"DELETE FROM '{self.files_table}' WHERE id='{id}'"
+        self._execute(query)
+
+    ################################################################
+    # DJobs
+    def new_djob(self, djob: DatabaseDJob):
+        query = f"INSERT OR REPLACE INTO '{self.djobs_table}' " \
+                f"({', '.join(DF.DJOBS_HEADERS.keys())}) " \
+                f"VALUES ({', '.join('?' * len(DF.DJOBS_HEADERS.keys()))})"
+        values = djob.tuple
+        self._execute(query, values)
+
+    @eval_kwargs(DatabaseDJob)
+    def get_djob(self, **kwargs) -> Tuple[int, DatabaseDJob]:
+        query = f"SELECT rowid,* FROM '{self.djobs_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
+        values = list(kwargs.values())
+        item = self._execute_fetchone(query, values)
+        if item is not None:
+            return item[0], DatabaseDJob.from_list(item[1:])
+        else:
+            raise ValueError
+
+    def get_all_djobs(self) -> List[DatabaseDJob]:
+        query = f"SELECT * FROM '{self.djobs_table}'"
+        items = self._execute_fetchall(query)
+        return [DatabaseDJob.from_list(row) for row in items]
+
+    def delete_djob(self, id: str):
+        query = f"DELETE FROM '{self.djobs_table}' WHERE id='{id}'"
         self._execute(query)

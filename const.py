@@ -40,6 +40,17 @@ class DF:  # Database Fields
                      TRASHED: "BOOLEAN NOT NULL",
                      MD5: "TEXT"}
 
+    STATUS = "status"
+    DJOBS_HEADERS = {ID: "TEXT NOT NULL UNIQUE",
+                     # MIME_TYPE: "TEXT NOT NULL",
+                     # MD5: "TEXT",
+                     STATUS: "INTEGER NOT NULL"}
+
+    # DJob Statuses
+    WAITING = 0
+    COMPLETE = 1
+    NETWORK_ERROR = 2
+
 
 class AF:  # Drive API Fields
     DEFAULT_FIELDS = ("id", "parents", "name", "size", "viewedByMeTime", "createdTime", "modifiedTime", "mimeType", "trashed", "md5Checksum", "shortcutDetails")
