@@ -16,36 +16,33 @@ from .const import CF, FF, AF
 
 
 class GoogleDriveProfile(Profile):
-    SERVICE_NAME: str = "google-drive"
-    SERVICE_LABEL: str = "Gooogle Drive"
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.client = DriveClient(client_id="831763421443-sjd4r53rp7a8ifbfsk6tpk4v50jpp467.apps.googleusercontent.com",
                                   client_secret="giRscT5FI4hmmdsVtV8BTzAe")  # TODO new ones
 
+    ################################################################
+    @property
+    def service_name(self) -> str:
+        return "google-drive"
+
+    @property
+    def service_label(self) -> str:
+        return "Gooogle Drive"
+
+    @property
+    def version(self) -> str:
+        return "1.0"
+
+    ################################################################
     @property
     def schema(self) -> dict:
         return {
-            "type": dict,
-            "required": [
-                CF.MOUNT_SECTION,
-            ],
-            "properties": {
-                CF.MOUNT_SECTION: {
-                    "type": dict,
-                    "required": [
-                        CF.MOUNTPOINT,
-                        CF.TRASH,
-                        CF.GOOGLE_APP_MODE
-                    ],
-                    "properties": {
-                        CF.MOUNTPOINT: {"type": str},
-                        CF.TRASH: {"type": bool},
-                        CF.GOOGLE_APP_MODE: {"type": str, "enum": FF.GOOGLE_APP_MODES}
-                    }
-                }
+            CF.MOUNT_SECTION: {
+                CF.MOUNTPOINT: "str()",
+                CF.TRASH: "bool()",
+                CF.GOOGLE_APP_MODE: f"enum({', '.join(FF.GOOGLE_APP_MODES)})"
             }
         }
 
@@ -53,25 +50,26 @@ class GoogleDriveProfile(Profile):
     def default_config(self) -> dict:
         return {
             CF.MOUNT_SECTION: {
-                CF.MOUNTPOINT: str(Path.home().joinpath("GoogleDrive")),
+                CF.MOUNTPOINT: str(Path.home().joinpath("Google Drive")),
                 CF.TRASH: False,
                 CF.GOOGLE_APP_MODE: FF.WEB
             }
         }
 
+    ################################################################
     def _create(self):
         credentials = self.client.auth()
-        keyring.set_password(self.SERVICE_NAME, self.PROFILE_NAME, credentials)
+        keyring.set_password(self.service_name, self.profile_name, credentials)
 
     def _remove(self):
         try:
-            keyring.delete_password(self.SERVICE_NAME, self.PROFILE_NAME)
+            keyring.delete_password(self.service_name, self.profile_name)
         except keyring.errors.PasswordDeleteError:
             pass
 
     def _start(self) -> Tuple[pyfuse3.Operations, Path, List[ThreadHandler]]:
         # Load credentials
-        credentials = keyring.get_password(self.SERVICE_NAME, self.PROFILE_NAME)
+        credentials = keyring.get_password(self.service_name, self.profile_name)
         if credentials is not None:
             res = self.client.load_credentials(json.loads(credentials))
             if not res:
