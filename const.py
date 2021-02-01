@@ -15,8 +15,6 @@ class FF:  # File System Fields
 
 
 class DF:  # Database Fields
-    ROWID = "rowid"
-
     ID = "id"
     PARENT_ID = "parent_id"
     PATH = "path"

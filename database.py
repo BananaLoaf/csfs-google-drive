@@ -1,6 +1,6 @@
 from typing import *
 
-from CloudStorageFileSystem.utils.database import Database, DatabaseItem, eval_kwargs
+from CloudStorageFileSystem.utils.database import Database, DatabaseItem, eval_kwargs, ROWID
 from .const import DF
 
 
