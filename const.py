@@ -28,7 +28,7 @@ class DF:  # Database Fields
     TARGET_ID = 'target_id'
     TRASHED = "trashed"
     MD5 = "md5"
-    FILES_HEADERS = {ID: "TEXT NOT NULL UNIQUE",
+    FILES_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
                      PARENT_ID: "TEXT",
                      PATH: "TEXT NOT NULL",
                      FILE_SIZE: "INTEGER NOT NULL",
@@ -41,7 +41,7 @@ class DF:  # Database Fields
                      MD5: "TEXT"}
 
     STATUS = "status"
-    DJOBS_HEADERS = {ID: "TEXT NOT NULL UNIQUE",
+    DJOBS_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
                      # MIME_TYPE: "TEXT NOT NULL",
                      # MD5: "TEXT",
                      STATUS: "INTEGER NOT NULL"}

@@ -25,8 +25,9 @@ def google_datetime_to_timestamp(datetime_str: str) -> int:
 class FUSEETemplate(Exception):
     en: int
 
-    def __init__(self, msg):
-        LOGGER.error(msg)
+    def __init__(self, msg: str):
+        if msg:
+            LOGGER.error(msg)
         raise FUSEError(self.en)
 
 
@@ -63,7 +64,7 @@ class DriveFileSystem(Operations):
         """Ignore specific files and folders"""
         path = Path(path)
         if path.name in FF.IGNORED_FILES:
-            raise FUSEError(errno.EIO)
+            raise FUSEIOError
 
     def get_db_file(self, path: str) -> Tuple[int, DatabaseFile]:
         if path == "/":
@@ -603,7 +604,7 @@ class DriveFileSystem(Operations):
                     djob = self.request_download(db_file)
                     self.await_download(djob)
 
-                return self.get_file_info(rowid)
+                return self.get_file_info(fh=rowid)
 
             # Google Apps
             else:

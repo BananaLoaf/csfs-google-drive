@@ -1,15 +1,15 @@
-from typing import List, Optional, Tuple
+from typing import *
 
 from CloudStorageFileSystem.utils.database import Database, DatabaseItem, eval_kwargs
 from .const import DF
 
 
 class DatabaseFile(DatabaseItem):
-    headers = DF.FILES_HEADERS
+    _columns = DF.FILES_COLUMNS
 
 
 class DatabaseDJob(DatabaseItem):
-    headers = DF.DJOBS_HEADERS
+    _columns = DF.DJOBS_COLUMNS
 
 
 class DriveDatabase(Database):
@@ -19,29 +19,29 @@ class DriveDatabase(Database):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.create_table(self.files_table, headers=DF.FILES_HEADERS, reset=True)
-        self._execute(f"CREATE INDEX IF NOT EXISTS {DF.ID}_index ON '{self.files_table}' ({DF.ID})")
-        self._execute(f"CREATE INDEX IF NOT EXISTS {DF.PARENT_ID}_index ON '{self.files_table}' ({DF.PARENT_ID})")
-        self._execute(f"CREATE INDEX IF NOT EXISTS {DF.PATH}_index ON '{self.files_table}' ({DF.PATH})")
+        self.create_table(self.files_table, headers=DF.FILES_COLUMNS, reset=True)
+        self.create_index(self.files_table, DF.ID)
+        self.create_index(self.files_table, DF.PARENT_ID)
+        self.create_index(self.files_table, DF.PATH)
 
-        self.create_table(self.djobs_table, headers=DF.DJOBS_HEADERS, reset=True)
-        self._execute(f"CREATE INDEX IF NOT EXISTS {DF.ID}_index ON '{self.djobs_table}' ({DF.ID})")
+        self.create_table(self.djobs_table, headers=DF.DJOBS_COLUMNS, reset=True)
+        self.create_index(self.djobs_table, DF.ID)
 
     ################################################################
     # Files
     def new_file(self, file: DatabaseFile):
         query = f"INSERT OR REPLACE INTO '{self.files_table}' " \
-                f"({', '.join(DF.FILES_HEADERS.keys())}) " \
-                f"VALUES ({', '.join('?' * len(DF.FILES_HEADERS.keys()))})"
-        values = file.tuple
-        self._execute(query, values)
+                f"({', '.join(DF.FILES_COLUMNS.keys())}) " \
+                f"VALUES ({', '.join('?' * len(DF.FILES_COLUMNS.keys()))})"
+        headers = file.headers
+        self._execute(query, headers)
 
     def new_files(self, files: List[DatabaseFile]):
         query = f"INSERT OR REPLACE INTO '{self.files_table}' " \
-                f"({', '.join(DF.FILES_HEADERS.keys())}) " \
-                f"VALUES ({', '.join('?' * len(DF.FILES_HEADERS.keys()))})"
-        values = [file.tuple for file in files]
-        self._executemany(query, values)
+                f"({', '.join(DF.FILES_COLUMNS.keys())}) " \
+                f"VALUES ({', '.join('?' * len(DF.FILES_COLUMNS.keys()))})"
+        headers = [file.headers for file in files]
+        self._executemany(query, headers)
 
     @eval_kwargs(DatabaseFile)
     def get_file(self, **kwargs) -> Tuple[int, DatabaseFile]:
@@ -78,10 +78,10 @@ class DriveDatabase(Database):
     # DJobs
     def new_djob(self, djob: DatabaseDJob):
         query = f"INSERT OR REPLACE INTO '{self.djobs_table}' " \
-                f"({', '.join(DF.DJOBS_HEADERS.keys())}) " \
-                f"VALUES ({', '.join('?' * len(DF.DJOBS_HEADERS.keys()))})"
-        values = djob.tuple
-        self._execute(query, values)
+                f"({', '.join(DF.DJOBS_COLUMNS.keys())}) " \
+                f"VALUES ({', '.join('?' * len(DF.DJOBS_COLUMNS.keys()))})"
+        headers = djob.headers
+        self._execute(query, headers)
 
     @eval_kwargs(DatabaseDJob)
     def get_djob(self, **kwargs) -> Tuple[int, DatabaseDJob]:
