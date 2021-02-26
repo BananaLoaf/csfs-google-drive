@@ -12,7 +12,7 @@ import googleapiclient.errors
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.auth.exceptions import RefreshError, TransportError
 
 from CloudStorageFileSystem.logger import LOGGER
@@ -64,6 +64,9 @@ class DriveFile:
 
     def keys(self):
         return list(self._data.keys())
+
+    def get(self, key, value):
+        return self._data.get(key, value)
 
 
 class DriveClient:
@@ -304,3 +307,17 @@ class DriveClient:
             status, done = downloader.next_chunk(num_retries=1)
             if update_func is not None:
                 update_func(status.progress())
+
+    def upload(self, name: str, parent_id: str, filename: Optional[str] = None, fields: Optional[Tuple[str]] = AF.DEFAULT_FIELDS) -> DriveFile:
+        kwargs = {
+            "body": {
+                "name": name,
+                "parents": [parent_id]
+            },
+            "fields": "*" if fields is None else ','.join(fields)
+        }
+        if filename is not None:
+            kwargs["media_body"] = MediaFileUpload(filename)
+
+        file = self.service.files().create(**kwargs).execute(num_retries=1)
+        return DriveFile(**file)
