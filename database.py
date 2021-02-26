@@ -33,15 +33,15 @@ class DriveDatabase(Database):
         query = f"INSERT OR REPLACE INTO '{self.files_table}' " \
                 f"({', '.join(DF.FILES_COLUMNS.keys())}) " \
                 f"VALUES ({', '.join('?' * len(DF.FILES_COLUMNS.keys()))})"
-        headers = file.headers
-        self._execute(query, headers)
+        values = file.values
+        self._execute(query, values)
 
     def new_files(self, files: List[DatabaseFile]):
         query = f"INSERT OR REPLACE INTO '{self.files_table}' " \
                 f"({', '.join(DF.FILES_COLUMNS.keys())}) " \
                 f"VALUES ({', '.join('?' * len(DF.FILES_COLUMNS.keys()))})"
-        headers = [file.headers for file in files]
-        self._executemany(query, headers)
+        values = [file.values for file in files]
+        self._executemany(query, values)
 
     @eval_kwargs(DatabaseFile)
     def get_file(self, **kwargs) -> Tuple[int, DatabaseFile]:

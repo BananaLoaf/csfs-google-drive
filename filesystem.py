@@ -27,7 +27,7 @@ def google_datetime_to_timestamp(datetime_str: str) -> int:
 class FUSEErrorTemplate(Exception):
     en: int
 
-    def __init__(self, msg: str):
+    def __init__(self, msg: Optional[str] = None):
         if msg:
             LOGGER.error(msg)
         raise FUSEError(self.en)

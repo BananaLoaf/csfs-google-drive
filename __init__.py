@@ -16,6 +16,10 @@ from .const import CF, FF, AF
 
 
 class GoogleDriveProfile(Profile):
+    service_name = "google-drive"
+    service_label = "Gooogle Drive"
+    version = "1.0"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -24,25 +28,12 @@ class GoogleDriveProfile(Profile):
 
     ################################################################
     @property
-    def service_name(self) -> str:
-        return "google-drive"
-
-    @property
-    def service_label(self) -> str:
-        return "Gooogle Drive"
-
-    @property
-    def version(self) -> str:
-        return "1.0"
-
-    ################################################################
-    @property
     def schema(self) -> dict:
         return {
             CF.MOUNT_SECTION: {
                 CF.MOUNTPOINT: "str()",
                 CF.TRASH: "bool()",
-                CF.GOOGLE_APP_MODE: f"enum({', '.join(FF.GOOGLE_APP_MODES)})"
+                CF.GOOGLE_APP_MODE: "enum('{}', '{}', '{}')".format(*FF.GOOGLE_APP_MODES)
             }
         }
 
@@ -68,7 +59,7 @@ class GoogleDriveProfile(Profile):
             pass
 
     def _start(self) -> Tuple[pyfuse3.Operations, Path, List[ThreadHandler]]:
-        # Load credentials
+        # Load credentials  TODO into file
         credentials = keyring.get_password(self.service_name, self.profile_name)
         if credentials is not None:
             res = self.client.load_credentials(json.loads(credentials))
