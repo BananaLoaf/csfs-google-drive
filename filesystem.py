@@ -363,25 +363,25 @@ class DriveFileSystem(Operations):
     ################################################################
     # Main ops
     async def lookup(self, inode_p: int, name: bytes, ctx: pyfuse3.RequestContext):
-        try:
-            rowid, db_file_p = self.db.get_file(**{ROWID: inode_p})
-            path = Path(db_file_p[DF.PATH]).joinpath(os.fsdecode(name))
-            self.try2ignore(path)
-        except ValueError:
-            raise FUSEFileNotFoundError(f"lookup, parent inode ({inode_p}) does not exist")
+        name = os.fsdecode(name)
+        self.try2ignore(name)
 
         try:
-            rowid, db_file = self.get_db_file(str(path))
+            rowid_p, db_file_p = self.db.get_file(**{ROWID: inode_p})
+        except ValueError:
+            FUSEFileNotFoundError(f"lookup, parent inode ({inode_p}) does not exist")
+
+        try:
+            rowid, db_file = self.db.get_file(**{DF.PARENT_ID: db_file_p[DF.ID], DF.NAME: name})
             return self.db2stat(rowid, db_file)
         except ValueError:
-            raise FUSEFileNotFoundError(f"lookup, '{path}' does not exist")
+            raise FUSEFileNotFoundError(f"lookup, '{name}' with parent inode ({inode_p}) does not exist")
 
     async def getattr(self, inode: int, ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
         try:
             rowid, db_file = self.db.get_file(**{ROWID: inode})
-            self.try2ignore(db_file[DF.PATH])
+            self.try2ignore(db_file[DF.NAME])
             return self.db2stat(rowid, db_file)
-
         except ValueError:
             raise FUSEFileNotFoundError(f"getattr, inode ({inode}) does not exist")
 
@@ -448,22 +448,22 @@ class DriveFileSystem(Operations):
     async def readdir(self, inode: int, start_id: int, token: pyfuse3.ReaddirToken):
         try:
             rowid, db_file = self.db.get_file(**{ROWID: inode})
-            path = db_file[DF.PATH]
+            path = self.resolve_path(db_file)
         except ValueError:
             raise FUSEFileNotFoundError(f"readdir, inode ({inode}) does not exist")
 
-        LOGGER.info(f"readdir '{path}'")
+        LOGGER.info(f"readdir ({inode}) '{path}'")
         db_files = self.db.get_files(**{DF.PARENT_ID: db_file[DF.ID], DF.TRASHED: self.trashed})
 
         # List all entries and sort them by inode
         entries = []
         for rowid, db_file in db_files:
-            name = os.fsencode(Path(db_file[DF.PATH]).name)
+            name = os.fsencode(db_file[DF.NAME])
             stat = self.db2stat(rowid, db_file)
             entries.append((name, stat))
         entries = sorted(entries, key=lambda row: row[1].st_ino)
 
-        # Take only new entries if start_id > 0, new entries are guaranteed to be at the end
+        # Take only new entries if start_id > 0, new entries have to be at the end
         for name, stat in list(entries)[start_id - 1 if start_id > 0 else start_id:]:
             if not pyfuse3.readdir_reply(token, name, stat, stat.st_ino):
                 break
