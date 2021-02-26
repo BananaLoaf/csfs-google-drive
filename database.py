@@ -22,7 +22,8 @@ class DriveDatabase(Database):
         self.create_table(self.files_table, headers=DF.FILES_COLUMNS, reset=True)
         self.create_index(self.files_table, DF.ID)
         self.create_index(self.files_table, DF.PARENT_ID)
-        self.create_index(self.files_table, DF.PATH)
+        self.create_index(self.files_table, DF.REAL_NAME)
+        self.create_index(self.files_table, DF.NAME)
 
         self.create_table(self.djobs_table, headers=DF.DJOBS_COLUMNS, reset=True)
         self.create_index(self.djobs_table, DF.ID)

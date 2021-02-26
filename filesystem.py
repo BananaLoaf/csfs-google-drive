@@ -69,11 +69,20 @@ class DriveFileSystem(Operations):
         if path.name in FF.IGNORED_FILES:
             raise FUSEIOError
 
-    def get_db_file(self, path: str) -> Tuple[int, DatabaseFile]:
-        if path == "/":
-            return self.db.get_file(**{DF.PATH: path})
-        else:
-            return self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
+    # def get_db_file(self, path: str) -> Tuple[int, DatabaseFile]:
+    #     if path == "/":
+    #         return self.db.get_file(**{DF.PATH: path})
+    #     else:
+    #         return self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
+
+    def resolve_path(self, db_file: DatabaseFile) -> Path:
+        parents = [db_file[DF.NAME], ]
+
+        while db_file[DF.ID] != AF.ROOT_ID:
+            rowid, db_file = self.db.get_file(**{DF.ID: db_file[DF.PARENT_ID]})
+            parents.append(db_file[DF.NAME])
+
+        return Path(*reversed(parents))
 
     def db2stat(self, rowid: int, db_file: DatabaseFile) -> pyfuse3.EntryAttributes:
         is_dir = db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE
@@ -112,25 +121,32 @@ class DriveFileSystem(Operations):
         parent_id = file["parents"][0] if "parents" in file.keys() else None
 
         if file["id"] == AF.ROOT_ID:
-            path = "/"
+            real_name = "/"
+            name = real_name
         else:
-            kwargs = {DF.ID: parent_id} if parent_id == AF.ROOT_ID else {DF.ID: parent_id, DF.TRASHED: self.trashed}
-            rowid, parent_db_file = self.db.get_file(**kwargs)
-            path = str(Path(parent_db_file[DF.PATH], file["name"]))
+            real_name = file["name"]
+            name = file["name"]
 
-        file_size = file["size"] if "size" in file.keys() else 0
+            # while True:
+            #     try:
+            #         db_file = self.db.get_file(**{DF.PARENT_ID: parent_id, DF.NAME: name})
+            #     except ValueError:
+            #         pass
+
+        file_size = file.get("size", 0)
         atime = google_datetime_to_timestamp(file["viewedByMeTime"]) if "viewedByMeTime" in file.keys() else 0
         ctime = google_datetime_to_timestamp(file["createdTime"])  # TODO ctime is not creation time
         mtime = google_datetime_to_timestamp(file["modifiedTime"])
         mime_type = file["mimeType"]
         target_id = file["shortcutDetails"]["targetId"] if "shortcutDetails" in file.keys() else None
         trashed = file["trashed"]
-        md5 = file["md5Checksum"] if "md5Checksum" in file.keys() else None
+        md5 = file.get("md5Checksum", None)
 
         db_file = DatabaseFile.from_kwargs(**{
             DF.ID: id,
             DF.PARENT_ID: parent_id,
-            DF.PATH: path,
+            DF.REAL_NAME: real_name,
+            DF.NAME: name,
             DF.FILE_SIZE: file_size,
             DF.ATIME: atime,
             DF.CTIME: ctime,
@@ -156,60 +172,27 @@ class DriveFileSystem(Operations):
 
     ################################################################
     # Listing
-    def recursive_listdir(self, path: str):
-        LOGGER.debug(f"Recursively listing '{path}'")
-        if path == "/":
-            self._recursive_list_root()
-        else:
-            rowid, db_file = self.get_db_file(path=path)
-            self._recursive_list_any(parent_id=db_file[DF.ID])
+    # def recursive_listdir(self, path: str):
+    #     LOGGER.debug(f"Recursively listing '{path}'")
+    #     if path == "/":
+    #         self._recursive_list_root()
+    #     else:
+    #         rowid, db_file = self.get_db_file(path=path)
+    #         self._recursive_list_any(parent_id=db_file[DF.ID])
 
     def _recursive_list_root(self):
-        q = f"'me' in owners and trashed={str(self.trashed).lower()}"
-        drive_files = self.exec_query(q=q)
-        drive_files = list(filter(lambda drive_file: "parents" in drive_file.keys(), drive_files))  # No orphans allowed
-
-        # Split folders and files into different lists
-        folders_drive_files = list(filter(lambda drive_file: drive_file["mimeType"] == AF.FOLDER_MIME_TYPE, drive_files))
-        file_drive_files = list(filter(lambda drive_file: drive_file["mimeType"] != AF.FOLDER_MIME_TYPE, drive_files))
-
-        # Get root and add to db
         db_file = self.drive2db(self.client.get_by_id(id=AF.ROOT_ID))
         self.db.new_file(db_file)
 
-        # Add folder files
-        added_ids = [db_file[DF.ID]]
-        while len(folders_drive_files) > 0:
-            # Filter folders with added parents
-            folder_drive_files_next = list(filter(
-                lambda drive_file: drive_file["parents"][0] in added_ids,
-                folders_drive_files
-            ))
+        q = f"'me' in owners and trashed={str(self.trashed).lower()}"
+        drive_files = self.exec_query(q=q)
 
-            # Folder was (un)trashed, but its parent wasn't and parent id needs to be reset to root
-            if len(folder_drive_files_next) == 0:
-                for drive_file in folders_drive_files:
-                    drive_file["parents"][0] = AF.ROOT_ID
-                continue
-
-            # Add folders with added parents and add them to the list of added ids
-            self.db.new_files([self.drive2db(drive_file) for drive_file in folder_drive_files_next])
-            added_ids += [drive_file[DF.ID] for drive_file in folder_drive_files_next]
-
-            # Filter not added files
-            folders_drive_files = list(filter(
-                lambda drive_file: drive_file not in folder_drive_files_next,
-                folders_drive_files
-            ))
-
-        # File was (un)trashed, but its parent wasn't and parent id needs to be reset to root
-        for drive_file in file_drive_files:
-            if drive_file["parents"][0] not in added_ids:
-                drive_file["parents"][0] = AF.ROOT_ID
-        # Add files
-        self.db.new_files([self.drive2db(drive_file) for drive_file in file_drive_files])
+        # TODO files with invisible parents
+        # drive_files = list(filter(lambda drive_file: "parents" in drive_file.keys(), drive_files))# No orphans allowed
+        self.db.new_files([self.drive2db(drive_file) for drive_file in drive_files])
 
     def _recursive_list_any(self, parent_id: str):
+        return 0
         """Asks every file and folder, adds all folders in the right order"""
         q = f"'me' in owners and '{parent_id}' in parents and trashed={str(self.trashed).lower()}"
         drive_files = self.exec_query(q=q)
@@ -348,7 +331,7 @@ class DriveFileSystem(Operations):
     def init(self):
         LOGGER.info(f"Initiating filesystem")
         self.update_statfs()
-        self.recursive_listdir("/")
+        self._recursive_list_root()
         LOGGER.info(f"Filesystem initiated successfully")
 
     def update_statfs(self):

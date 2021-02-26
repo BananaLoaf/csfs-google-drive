@@ -17,7 +17,8 @@ class FF:  # File System Fields
 class DF:  # Database Fields
     ID = "id"
     PARENT_ID = "parent_id"
-    PATH = "path"
+    REAL_NAME = "real_name"
+    NAME = "name"
     FILE_SIZE = "file_size"
     ATIME = "atime"
     CTIME = "ctime"
@@ -28,7 +29,8 @@ class DF:  # Database Fields
     MD5 = "md5"
     FILES_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
                      PARENT_ID: "TEXT",
-                     PATH: "TEXT NOT NULL",
+                     REAL_NAME: "TEXT NOT NULL",
+                     NAME: "TEXT NOT NULL",
                      FILE_SIZE: "INTEGER NOT NULL",
                      ATIME: "INTEGER NOT NULL",
                      CTIME: "INTEGER NOT NULL",
