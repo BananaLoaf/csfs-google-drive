@@ -69,12 +69,6 @@ class DriveFileSystem(Operations):
         if path.name in FF.IGNORED_FILES:
             raise FUSEIOError
 
-    # def get_db_file(self, path: str) -> Tuple[int, DatabaseFile]:
-    #     if path == "/":
-    #         return self.db.get_file(**{DF.PATH: path})
-    #     else:
-    #         return self.db.get_file(**{DF.PATH: path, DF.TRASHED: self.trashed})
-
     def resolve_path(self, db_file: DatabaseFile) -> Path:
         parents = [db_file[DF.NAME], ]
 
@@ -83,6 +77,13 @@ class DriveFileSystem(Operations):
             parents.append(db_file[DF.NAME])
 
         return Path(*reversed(parents))
+
+    def get_by_path(self, path: Path) -> Tuple[int, DatabaseFile]:
+        inode, db_file = self.db.get_file(**{DF.ID: AF.ROOT_ID})
+        for child_name in path.parts[1:]:
+            inode, db_file = self.db.get_file(**{DF.PARENT_ID: db_file[DF.ID], DF.NAME: child_name})
+
+        return inode, db_file
 
     def db2stat(self, inode: int, db_file: DatabaseFile) -> pyfuse3.EntryAttributes:
         is_dir = db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE
@@ -389,41 +390,38 @@ class DriveFileSystem(Operations):
         # Check if target_path is absolute
         target_path = Path(os.fsdecode(target_path))
         if not target_path.is_absolute():
-            raise FUSEFileNotFoundError(f"symlink, target path '{target_path}' is not absolute")
+            raise FUSEFileNotFoundError(f"[symlink] target path '{target_path}' is not absolute")
 
         # Check if under mountpoint
         if self.mountpoint not in list(target_path.parents):
-            raise FUSECrossDeviceLink(f"symlink, invalid target path '{target_path}', cross-device link")
+            raise FUSECrossDeviceLink(f"[symlink] invalid target path '{target_path}', cross-device link")
         target_path = Path("/") / target_path.relative_to(self.mountpoint)
 
-        # Get link path
         try:
-            rowid, db_file_p_link = self.db.get_file(**{ROWID: inode_p})
-            link_path = Path(db_file_p_link[DF.PATH]).joinpath(os.fsdecode(name))
+            inode_p, db_file_p = self.db.get_file(**{ROWID: inode_p})
         except ValueError:
-            raise FUSEFileNotFoundError(f"symlink, symlink parent inode ({inode_p}) does not exist")
+            raise FUSEFileNotFoundError(f"[symlink] (inode_p {inode_p}) does not exist")
 
         # Check existence and non existence
+        name = os.fsdecode(name)
         try:
-            rowid, db_file_target = self.get_db_file(str(target_path))
+            rowid, db_file_target = self.get_by_path(target_path)
         except ValueError:
-            raise FUSEFileNotFoundError(f"symlink, '{target_path}' does not exists")
+            raise FUSEFileNotFoundError(f"[symlink] target '{target_path}' does not exists")
         try:
-            self.get_db_file(str(link_path))
-            raise FUSEFileExistsError(f"symlink, '{link_path}' already exists")
+            self.db.get_file(**{DF.PARENT_ID: db_file_p[DF.ID], DF.NAME: name})
+            raise FUSEFileExistsError(f"[symlink] link (inode_p {inode_p})/'{name}' already exists")
         except ValueError:
             pass
 
         # Create shortcut
-        LOGGER.info(f"symlink '{link_path}' -> '{target_path}'")
-        drive_file = self.client.create_shortcut(parent_id=db_file_p_link[DF.ID],
-                                                 name=link_path.name,
+        LOGGER.info(f"[symlink] (inode_p {inode_p})/'{name}' -> '{target_path}'")
+        drive_file = self.client.create_shortcut(parent_id=db_file_p[DF.ID],
+                                                 name=name,
                                                  target_id=db_file_target[DF.ID])
-        db_file_new = self.drive2db(drive_file)
-        self.db.new_file(db_file_new)
-
-        rowid, db_file = self.get_db_file(db_file_new[DF.PATH])
-        return self.db2stat(rowid, db_file)
+        db_file = self.drive2db(drive_file)
+        inode = self.db.new_file(db_file)
+        return self.db2stat(inode, db_file)
 
     async def readlink(self, inode: int, ctx: pyfuse3.RequestContext) -> bytes:
         try:
