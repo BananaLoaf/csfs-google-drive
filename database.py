@@ -30,12 +30,13 @@ class DriveDatabase(Database):
 
     ################################################################
     # Files
-    def new_file(self, file: DatabaseFile):
+    def new_file(self, file: DatabaseFile) -> int:
         query = f"INSERT OR REPLACE INTO '{self.files_table}' " \
                 f"({', '.join(DF.FILES_COLUMNS.keys())}) " \
-                f"VALUES ({', '.join('?' * len(DF.FILES_COLUMNS.keys()))})"
+                f"VALUES ({', '.join('?' * len(DF.FILES_COLUMNS.keys()))}); " \
+                f"SELECT last_insert_rowid();"
         values = file.values
-        self._execute(query, values)
+        return self._execute_fetchone(query, values)[0]
 
     def new_files(self, files: List[DatabaseFile]):
         query = f"INSERT OR REPLACE INTO '{self.files_table}' " \
