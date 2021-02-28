@@ -17,39 +17,57 @@ class FF:  # File System Fields
 class DF:  # Database Fields
     ID = "id"
     PARENT_ID = "parent_id"
-    REAL_NAME = "real_name"
     NAME = "name"
     FILE_SIZE = "file_size"
     ATIME = "atime"
     CTIME = "ctime"
     MTIME = "mtime"
     MIME_TYPE = "mime_type"
-    TARGET_ID = 'target_id'
+    TARGET_ID = "target_id"
     TRASHED = "trashed"
     MD5 = "md5"
-    FILES_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
+    DRIVE_FILES_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
+                           PARENT_ID: "TEXT",
+                           NAME: "TEXT NOT NULL",
+                           FILE_SIZE: "INTEGER NOT NULL",
+                           MD5: "TEXT",
+                           MIME_TYPE: "TEXT NOT NULL",
+                           TARGET_ID: "TEXT",
+                           ATIME: "INTEGER NOT NULL",
+                           CTIME: "INTEGER NOT NULL",
+                           MTIME: "INTEGER NOT NULL",
+                           TRASHED: "BOOLEAN NOT NULL"}
+
+    DIRNAME = "dirname"
+    BASENAME = "basename"
+    PATH = "path"
+    IS_DIR = "is_dir"
+    IS_LINK = "is_link"
+    IS_FILE = "is_file"
+    FILES_COLUMNS = {ID: "TEXT",
                      PARENT_ID: "TEXT",
-                     REAL_NAME: "TEXT NOT NULL",
-                     NAME: "TEXT NOT NULL",
-                     FILE_SIZE: "INTEGER NOT NULL",
+                     DIRNAME: "TEXT",
+                     BASENAME: "TEXT",
+                     PATH: "TEXT UNIQUE",
+                     FILE_SIZE: "INTEGER",
                      ATIME: "INTEGER NOT NULL",
                      CTIME: "INTEGER NOT NULL",
                      MTIME: "INTEGER NOT NULL",
-                     MIME_TYPE: "TEXT NOT NULL",
-                     TARGET_ID: "TEXT",
-                     TRASHED: "BOOLEAN NOT NULL",
-                     MD5: "TEXT"}
+                     IS_DIR: "BOOLEAN NOT NULL",
+                     IS_LINK: "BOOLEAN NOT NULL",
+                     IS_FILE: "BOOLEAN NOT NULL",
+                     TARGET_ID: "TEXT"}
 
-    STATUS = "status"
-    DJOBS_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
-                     # MIME_TYPE: "TEXT NOT NULL",
-                     # MD5: "TEXT",
-                     STATUS: "INTEGER NOT NULL"}
-
-    # DJob Statuses
-    WAITING = 0
-    COMPLETE = 1
-    NETWORK_ERROR = 2
+    # STATUS = "status"
+    # DJOBS_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
+    #                  # MIME_TYPE: "TEXT NOT NULL",
+    #                  # MD5: "TEXT",
+    #                  STATUS: "INTEGER NOT NULL"}
+    #
+    # # DJob Statuses
+    # WAITING = 0
+    # COMPLETE = 1
+    # NETWORK_ERROR = 2
 
 
 class AF:  # Drive API Fields
