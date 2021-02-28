@@ -3,8 +3,6 @@ from typing import Tuple, List
 from threading import Thread
 
 from pathlib import Path
-import keyring
-from keyring import errors
 import pyfuse3
 
 from CloudStorageFileSystem.utils.profile import Profile, ThreadHandler
@@ -50,17 +48,16 @@ class GoogleDriveProfile(Profile):
     ################################################################
     def _create(self):
         credentials = self.client.auth()
-        keyring.set_password(self.service_name, self.profile_name, credentials)
+        with self.profile_path.joinpath("credentials.json").open("w") as file:
+            file.write(credentials)
 
     def _remove(self):
-        try:
-            keyring.delete_password(self.service_name, self.profile_name)
-        except keyring.errors.PasswordDeleteError:
-            pass
+        pass
 
     def _start(self) -> Tuple[pyfuse3.Operations, Path, List[ThreadHandler]]:
-        # Load credentials  TODO into file
-        credentials = keyring.get_password(self.service_name, self.profile_name)
+        # Load credentials
+        with self.profile_path.joinpath("credentials.json").open("r") as file:
+            credentials = file.read()
         if credentials is not None:
             res = self.client.load_credentials(json.loads(credentials))
             if not res:
