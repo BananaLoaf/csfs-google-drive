@@ -65,11 +65,11 @@ class GoogleDriveProfile(Profile):
         else:
             raise ProfileStartingError("No credentials found, invalid profile")
 
-        self.client.update_root_id()
+        AF.ROOT_ID = self.client.get_root_id()
         db = DriveDatabase(self.profile_path.joinpath("data.db"))
         ops = DriveFileSystem(db=db,
                               client=self.client,
-                              trash=self.config[CF.MOUNT_SECTION][CF.TRASH],
+                              bin=self.config[CF.MOUNT_SECTION][CF.TRASH],
                               mountpoint=Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT]),
                               cache_path=self.cache_path)
 

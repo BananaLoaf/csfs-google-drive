@@ -139,9 +139,9 @@ class DriveClient:
             self.credentials = credentials
             return True
 
-    def update_root_id(self):
+    def get_root_id(self) -> str:
         """Update root id 'root' to actual root id"""
-        AF.ROOT_ID = self.get_by_id(id=AF.ROOT_ID)["id"]
+        return self.get_by_id(id=AF.ROOT_ID)["id"]
 
     def about(self):
         """https://developers.google.com/drive/api/v3/reference/about"""

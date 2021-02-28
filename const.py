@@ -8,10 +8,10 @@ class CF:  # Config Fields
 class FF:  # File System Fields
     IGNORED_FILES = [".Trash", ".Trash-1000", "BDMV", ".xdg-volume-info", "autorun.inf", ".hidden", ".comments", ".directory"]
 
-    WEB: str = "WEB"
-    CONVERT: str = "CONVERT"
-    IGNORE: str = "IGNORE"
-    GOOGLE_APP_MODES: str = [WEB, CONVERT, IGNORE]
+    WEB = "WEB"
+    CONVERT = "CONVERT"
+    IGNORE = "IGNORE"
+    GOOGLE_APP_MODES = [WEB, CONVERT, IGNORE]
 
 
 class DF:  # Database Fields

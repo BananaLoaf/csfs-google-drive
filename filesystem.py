@@ -51,12 +51,12 @@ class FUSEIOError(FUSEErrorTemplate):
 
 ################################################################
 class DriveFileSystem(Operations):
-    def __init__(self, db: DriveDatabase, client: DriveClient, trash: bool, mountpoint: Path, cache_path: Path):
+    def __init__(self, db: DriveDatabase, client: DriveClient, bin: bool, mountpoint: Path, cache_path: Path):
         super().__init__()
 
         self.db = db
         self.client = client
-        self.trashed = trash
+        self.trashed = bin
 
         self.mountpoint = mountpoint
         self.cache_path = cache_path
