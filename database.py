@@ -39,91 +39,113 @@ class DriveDatabase(Database):
 
     ################################################################
     # Files
-    @lock
-    @handle_exceptions
-    def new_drive_file(self, drive_file: DatabaseDriveFile) -> int:
-        cursor = self.conn.cursor()
-
+    def new_dfile(self, drive_file: DatabaseDriveFile):
         # Add drive file
-        drive_file_query = f"INSERT OR REPLACE INTO '{self.drive_files_table}' " \
-                           f"({', '.join(DF.DRIVE_FILES_COLUMNS.keys())}) " \
-                           f"VALUES ({','.join('?' * len(DF.DRIVE_FILES_COLUMNS.keys()))})"
-        drive_file_values = drive_file.values
-        cursor.execute(drive_file_query, drive_file_values)
+        query = f"INSERT OR REPLACE INTO '{self.drive_files_table}' " \
+                f"({', '.join(DF.DRIVE_FILES_COLUMNS.keys())}) " \
+                f"VALUES ({','.join('?' * len(DF.DRIVE_FILES_COLUMNS.keys()))})"
+        self._execute({query: drive_file.values})
 
-        # Add file
-        if drive_file[DF.ID] == AF.ROOT_ID:
-            self._new_file(cursor, drive_file, self.files_table)
-            self._new_file(cursor, drive_file, self.bin_table)
-            self.conn.commit()
-            return 1
+    def new_dfiles(self, drive_files: List[DatabaseDriveFile]):
+        query = f"INSERT OR REPLACE INTO '{self.drive_files_table}' " \
+                f"({', '.join(DF.DRIVE_FILES_COLUMNS.keys())}) " \
+                f"VALUES ({', '.join('?' * len(DF.DRIVE_FILES_COLUMNS.keys()))})"
+        values = [file.values for file in drive_files]
+        self._executemany({query: values})
 
-        else:
-            self._new_file(cursor, drive_file, self.bin_table if drive_file[DF.TRASHED] else self.files_table)
-            self.conn.commit()
-            cursor.execute(f"SELECT last_insert_rowid() FROM '{self.files_table}'")
-            return cursor.fetchone()[0]
+    @lock
+    # @handle_exceptions
+    def new_file_from_dfile(self, bin: bool, dfile: DatabaseDriveFile):
+        cursor = self.conn.cursor()
+        table_name = self.bin_table if bin else self.files_table
 
-    def _new_file(self, cursor, drive_file: DatabaseDriveFile, table_name: str):
-        if drive_file[DF.NAME] == "/":
+        if dfile[DF.ID] == AF.ROOT_ID:
             dirname = "/"
             basename = None
             path = "/"
         else:
             dirname_query = f"SELECT {DF.PATH} FROM '{table_name}' WHERE {DF.ID}=?"
-            cursor.execute(dirname_query, (drive_file[DF.PARENT_ID],))
+            cursor.execute(dirname_query, (dfile[DF.PARENT_ID],))
             dirname = cursor.fetchone()[0]
 
-            basename = drive_file[DF.NAME]
+            basename = dfile[DF.NAME]
             path = os.path.join(dirname, basename)
 
-        is_dir = drive_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE
-        is_link = drive_file[DF.MIME_TYPE] == AF.LINK_MIME_TYPE
-        is_file = not is_dir and not is_link
+        is_dir = dfile[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE
+        is_link = dfile[DF.MIME_TYPE] == AF.LINK_MIME_TYPE
+
+        if dfile[DF.TARGET_ID] is not None:
+            target_query = f"SELECT path FROM '{table_name}' WHERE {DF.ID}=?"
+            cursor.execute(target_query, (dfile[DF.TARGET_ID],))
+            target_path = cursor.fetchone()[0]
+        else:
+            target_path = None
 
         file_query = f"INSERT OR REPLACE INTO '{table_name}' " \
                      f"({', '.join(DF.FILES_COLUMNS.keys())}) " \
                      f"VALUES ({','.join('?' * len(DF.FILES_COLUMNS.keys()))})"
-        file_values = (drive_file[DF.ID], drive_file[DF.PARENT_ID], dirname, basename, path,
-                       drive_file[DF.FILE_SIZE],
-                       drive_file[DF.ATIME], drive_file[DF.MTIME], drive_file[DF.CTIME],
-                       is_dir, is_link, is_file, drive_file[DF.TARGET_ID])
+        file_values = (dfile[DF.ID], dfile[DF.PARENT_ID], dirname, basename, path,
+                       dfile[DF.FILE_SIZE],
+                       dfile[DF.ATIME], dfile[DF.MTIME], dfile[DF.CTIME],
+                       is_dir, is_link, dfile[DF.TARGET_ID], target_path)
 
         cursor.execute(file_query, file_values)
+        self.conn.commit()
+        cursor.execute(f"SELECT last_insert_rowid() FROM '{table_name}'")
 
-    # def new_files(self, files: List[DatabaseDriveFile]):
-    #     query = f"INSERT OR REPLACE INTO '{self.drive_files_table}' " \
-    #             f"({', '.join(DF.DRIVE_FILES_COLUMNS.keys())}) " \
-    #             f"VALUES ({', '.join('?' * len(DF.DRIVE_FILES_COLUMNS.keys()))})"
-    #     values = [file.values for file in files]
-    #     self._executemany(query, values)
+        return cursor.fetchone()[0], DatabaseFile.from_list(file_values)
 
     # @eval_kwargs(DatabaseFile)
-    def get_file(self, bin: bool, **kwargs) -> Tuple[int, DatabaseFile]:
+    def get_file(self, bin: bool, **kwargs) -> Optional[DatabaseFile]:
         query = f"SELECT rowid,* FROM '{self.bin_table if bin else self.files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
         values = list(kwargs.values())
-        item = self._execute_fetchone({query: values})
-        if item is not None:
-            return item[0], DatabaseFile.from_list(item[1:])
-        else:
-            raise ValueError
 
-    # @eval_kwargs(DatabaseDriveFile)
-    def get_drive_file(self, **kwargs) -> Tuple[int, DatabaseDriveFile]:
-        query = f"SELECT rowid,* FROM '{self.drive_files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
-        values = list(kwargs.values())
-        item = self._execute_fetchone({query: values})
-        if item is not None:
-            return item[0], DatabaseDriveFile.from_list(item[1:])
+        if item := self._execute_fetchone({query: values}):
+            file = DatabaseFile.from_list(item[1:])
+            file.rowid = item[0]
+            return file
         else:
-            raise ValueError
+            return item
 
     # @eval_kwargs(DatabaseFile)
-    def get_files(self, bin: bool, **kwargs) -> List[Tuple[int, DatabaseFile]]:
+    def get_files(self, bin: bool, **kwargs) -> List[DatabaseFile]:
         query = f"SELECT rowid,* FROM '{self.bin_table if bin else self.files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
         values = list(kwargs.values())
         items = self._execute_fetchall({query: values})
-        return [(item[0], DatabaseFile.from_list(item[1:])) for item in items]
+
+        files = []
+        for item in items:
+            file = DatabaseFile.from_list(item[1:])
+            file.rowid = item[0]
+            files.append(file)
+
+        return files
+
+    # @eval_kwargs(DatabaseDriveFile)
+    def get_drive_file(self, **kwargs) -> Optional[DatabaseDriveFile]:
+        query = f"SELECT rowid,* FROM '{self.drive_files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
+        values = list(kwargs.values())
+
+        if item := self._execute_fetchone({query: values}):
+            file = DatabaseDriveFile.from_list(item[1:])
+            file.rowid = item[0]
+            return file
+        else:
+            return item
+
+    # @eval_kwargs(DatabaseFile)
+    def get_dfiles(self, **kwargs) -> List[DatabaseDriveFile]:
+        query = f"SELECT rowid,* FROM '{self.drive_files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
+        values = list(kwargs.values())
+        items = self._execute_fetchall({query: values})
+
+        files = []
+        for item in items:
+            file = DatabaseDriveFile.from_list(item[1:])
+            file.rowid = item[0]
+            files.append(file)
+
+        return files
 
     # def delete_file_children(self, id: str):
     #     ids = [id]

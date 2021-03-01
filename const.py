@@ -43,7 +43,7 @@ class DF:  # Database Fields
     PATH = "path"
     IS_DIR = "is_dir"
     IS_LINK = "is_link"
-    IS_FILE = "is_file"
+    TARGET_PATH = "target_path"
     FILES_COLUMNS = {ID: "TEXT",
                      PARENT_ID: "TEXT",
                      DIRNAME: "TEXT",
@@ -55,8 +55,8 @@ class DF:  # Database Fields
                      MTIME: "INTEGER NOT NULL",
                      IS_DIR: "BOOLEAN NOT NULL",
                      IS_LINK: "BOOLEAN NOT NULL",
-                     IS_FILE: "BOOLEAN NOT NULL",
-                     TARGET_ID: "TEXT"}
+                     TARGET_ID: "TEXT",
+                     TARGET_PATH: "TEXT"}
 
     # STATUS = "status"
     # DJOBS_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",

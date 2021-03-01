@@ -69,26 +69,24 @@ class DriveFileSystem(Operations):
         if path.name in FF.IGNORED_FILES:
             raise FUSEIOError
 
-    def file2stat(self, inode: int, db_file: DatabaseFile) -> pyfuse3.EntryAttributes:
+    def file2stat(self, file: DatabaseFile) -> pyfuse3.EntryAttributes:
         st = pyfuse3.EntryAttributes()
-        if db_file[DF.IS_DIR]:
+        if file[DF.IS_DIR]:
             st.st_mode = stat.S_IFDIR | 0o755
             st.st_size = 0
-        elif db_file[DF.IS_LINK]:
+        elif file[DF.IS_LINK]:
             st.st_mode = stat.S_IFLNK | 0o777
             st.st_size = 40
-        elif db_file[DF.IS_FILE]:
-            st.st_mode = stat.S_IFREG | 0o644
-            st.st_size = db_file[DF.FILE_SIZE]
         else:
-            raise NotImplementedError
+            st.st_mode = stat.S_IFREG | 0o644
+            st.st_size = file[DF.FILE_SIZE]
 
-        st.st_ino = inode
+        st.st_ino = file.rowid
         st.st_nlink = 1
         st.st_blocks = int((st.st_size + 511) / 512)
-        st.st_atime_ns = float(db_file[DF.ATIME] - time.timezone) * 10**9
-        st.st_mtime_ns = float(db_file[DF.MTIME] - time.timezone) * 10**9
-        st.st_ctime_ns = float(db_file[DF.CTIME] - time.timezone) * 10**9
+        st.st_atime_ns = float(file[DF.ATIME] - time.timezone) * 10 ** 9
+        st.st_mtime_ns = float(file[DF.MTIME] - time.timezone) * 10 ** 9
+        st.st_ctime_ns = float(file[DF.CTIME] - time.timezone) * 10 ** 9
 
         return st
 
@@ -100,7 +98,7 @@ class DriveFileSystem(Operations):
     #     fi.nonseekable = False
     #     return fi
 
-    def api_file2drive_file(self, file: DriveFile) -> DatabaseDriveFile:
+    def api2dfile(self, file: DriveFile) -> DatabaseDriveFile:
         id = file["id"]
         parent_id = file["parents"][0] if "parents" in file.keys() else None
 
@@ -152,59 +150,63 @@ class DriveFileSystem(Operations):
 
     ################################################################
     # Updating
-    def _update_all(self):
-        db_file = self.api_file2drive_file(self.client.get_by_id(id=AF.ROOT_ID))
-        self.db.new_drive_file(db_file)
+    def _update_all_dfiles(self):
+        dfile = self.api2dfile(self.client.get_by_id(id=AF.ROOT_ID))
+        self.db.new_dfile(dfile)
 
         q = f"'me' in owners and trashed={str(self.trashed).lower()}"
-        drive_files = self.exec_query(q=q)
+        api_files = self.exec_query(q=q)
 
-        # TODO files with invisible parents
-        # drive_files = list(filter(lambda drive_file: "parents" in drive_file.keys(), drive_files))# No orphans allowed
-        for drive_file in drive_files:
-            self.db.new_drive_file(self.api_file2drive_file(drive_file))
-        # self.db.new_files([self.drive2db(drive_file) for drive_file in drive_files])
+        self.db.new_dfiles([self.api2dfile(api_file) for api_file in api_files])
 
-    def _update_tree(self, parent_id: str):
-        """Asks every file and folder, adds all folders in the right order"""
-        drive_file = self.client.get_by_id(id=parent_id)
-        self.db.new_drive_file(self.api_file2drive_file(drive_file))
+    def _update_tree_dfiles(self, parent_id: str):
+        api_file = self.client.get_by_id(id=parent_id)
+        self.db.new_dfile(self.api2dfile(api_file))
 
         q = f"'me' in owners and '{parent_id}' in parents and trashed={str(self.trashed).lower()}"
-        drive_files = self.exec_query(q=q)
+        api_files = self.exec_query(q=q)
 
-        while len(drive_files) > 0:
-            db_files = [self.api_file2drive_file(drive_file) for drive_file in drive_files]
-            for db_file in db_files:
-                self.db.new_drive_file(db_file)
+        while len(api_files) > 0:
+            dfiles = [self.api2dfile(api_file) for api_file in api_files]
+            self.db.new_dfiles(dfiles)
 
             # Filter folders and extract their ids
-            folders_drive_files = filter(lambda db_file: db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE, db_files)
-            parent_ids = [drive_file["id"] for drive_file in folders_drive_files]
+            dir_dfiles = filter(lambda db_file: db_file[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE, dfiles)
+            parent_ids = [dfile[DF.ID] for dfile in dir_dfiles]
 
             # Break in chunks and exec query
-            drive_files = []
+            api_files = []
             chunk_size = 50
             for i in range(0, len(parent_ids), chunk_size):
                 ids_chunk = parent_ids[i:i + chunk_size]
                 q = f"'me' in owners and trashed={str(self.trashed).lower()} and " + \
                     "(" + " or ".join([f"'{id}' in parents" for id in ids_chunk]) + ")"
-                drive_files += self.exec_query(q=q)
+                api_files += self.exec_query(q=q)
 
-    # def listdir(self, path: str):
-    #     LOGGER.debug(f"Listing '{path}'")
-    #     parent_id = AF.ROOT_ID if path == "/" else self.get_db_file(path=path)[DF.ID]
-    #     try:
-    #         LOGGER.debug(f"Updating files inside '{path}' - '{parent_id}'")
-    #         q = f"'{parent_id}' in parents and trashed={str(self.trashed).lower()}"
-    #         drive_files = self.exec_query(q=q)
-    #         drive_files.append(self.client.get_by_id(id=parent_id))
-    #
-    #         db_files = [self.drive2db(drive_file) for drive_file in drive_files]
-    #         self.db.new_files(db_files)
-    #
-    #     except ConnectionError as err:
-    #         LOGGER.error(err)
+    def _update_tree_files(self, parent_id: str):
+        dfile = self.db.get_drive_file(**{DF.ID: parent_id, DF.TRASHED: self.trashed})
+        self.db.new_file_from_dfile(bin=self.trashed, dfile=dfile)
+
+        dfiles = self.db.get_dfiles(**{DF.TRASHED: self.trashed})
+
+        # Add folders first
+        added_ids = [dfile[DF.ID], ]
+        dir_dfiles = list(filter(lambda dfile: dfile[DF.MIME_TYPE] == AF.FOLDER_MIME_TYPE, dfiles))
+
+        while len(dir_dfiles) > 0:
+            for dfile in filter(lambda dfile: dfile[DF.PARENT_ID] in added_ids, dir_dfiles):
+                self.db.new_file_from_dfile(bin=self.trashed, dfile=dfile)
+                added_ids.append(dfile[DF.ID])
+
+            dir_dfiles = list(filter(lambda dfile: dfile[DF.ID] not in added_ids, dir_dfiles))
+
+        # Files next
+        for dfile in filter(lambda dfile: dfile[DF.MIME_TYPE] != AF.FOLDER_MIME_TYPE and dfile[DF.MIME_TYPE] != AF.LINK_MIME_TYPE, dfiles):
+            self.db.new_file_from_dfile(bin=self.trashed, dfile=dfile)
+
+        # Links last
+        for dfile in filter(lambda dfile: dfile[DF.MIME_TYPE] == AF.LINK_MIME_TYPE, dfiles):
+            self.db.new_file_from_dfile(bin=self.trashed, dfile=dfile)
 
     ################################################################
     # Cache handling
@@ -304,7 +306,8 @@ class DriveFileSystem(Operations):
     def init(self):
         LOGGER.info(f"Initiating filesystem")
         self.update_statfs()
-        self._update_tree(parent_id=AF.ROOT_ID)
+        self._update_all_dfiles()
+        self._update_tree_files(AF.ROOT_ID)
         LOGGER.info(f"Filesystem initiated successfully")
 
     def update_statfs(self):
@@ -339,39 +342,32 @@ class DriveFileSystem(Operations):
         name = os.fsdecode(name)
         self.try2ignore(name)
 
-        try:
-            inode_p, db_file_p = self.db.get_file(bin=self.trashed, **{ROWID: inode_p})
-            path = Path(db_file_p[DF.BASENAME], name)
-        except ValueError:
+        if not (file_p := self.db.get_file(bin=self.trashed, **{ROWID: inode_p})):
             raise FUSEFileNotFoundError(f"[lookup] (inode_p {inode_p}) does not exist")
 
-        try:
-            inode, db_file = self.db.get_file(bin=self.trashed, **{DF.PATH: str(path)})
-            return self.file2stat(inode, db_file)
-        except ValueError:
-            raise FUSEFileNotFoundError(f"[lookup] (inode_p {inode_p}) '{path}' does not exist")
+        if not (file := self.db.get_file(bin=self.trashed, **{DF.DIRNAME: file_p[DF.PATH], DF.BASENAME: name})):
+            path = Path(file_p[DF.PATH], name)
+            raise FUSEFileNotFoundError(f"[lookup] '{path}' does not exist")
+
+        return self.file2stat(file)
 
     async def getattr(self, inode: int, ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
-        try:
-            inode, db_file = self.db.get_file(bin=self.trashed, **{ROWID: inode})
-        except ValueError:
+        if not (file := self.db.get_file(bin=self.trashed, **{ROWID: inode})):
             raise FUSEFileNotFoundError(f"[getattr] (inode {inode}) does not exist")
 
-        self.try2ignore(db_file[DF.PATH])
-        return self.file2stat(inode, db_file)
+        self.try2ignore(file[DF.PATH])
+        return self.file2stat(file)
 
     async def readlink(self, inode: int, ctx: pyfuse3.RequestContext) -> bytes:
-        try:
-            inode, db_file = self.db.get_file(bin=self.trashed, **{ROWID: inode})
-        except ValueError:
+        if not (file := self.db.get_file(bin=self.trashed, **{ROWID: inode})):
             raise FUSEFileNotFoundError(f"[readlink] (inode {inode}) does not exist")
 
         # Handle link target
-        try:
-            inode_t, db_file_target = self.db.get_file(bin=self.trashed, **{DF.ID: db_file[DF.TARGET_ID]})
-            target_path = Path(db_file_target[DF.PATH])
-        except ValueError:  # Invalid link, point to itself
-            target_path = Path(db_file[DF.PATH])
+        if file_t := self.db.get_file(bin=self.trashed, **{DF.ID: file[DF.TARGET_ID]}):
+            target_path = Path(file_t[DF.PATH])
+        # Invalid link, point to itself
+        else:
+            target_path = Path(file[DF.PATH])
 
         # Replace target_path's root with mountpoint
         target_path = self.mountpoint / target_path.relative_to(target_path.root)
@@ -381,19 +377,17 @@ class DriveFileSystem(Operations):
         return inode
 
     async def readdir(self, inode: int, start_id: int, token: pyfuse3.ReaddirToken):
-        try:
-            inode, db_file = self.db.get_file(bin=self.trashed, **{ROWID: inode})
-        except ValueError:
+        if not (file := self.db.get_file(bin=self.trashed, **{ROWID: inode})):
             raise FUSEFileNotFoundError(f"[readdir] (inode {inode}) does not exist")
 
-        LOGGER.info(f"[readdir] '{db_file[DF.PATH]}'")
-        db_files = self.db.get_files(bin=self.trashed, **{DF.PARENT_ID: db_file[DF.ID]})
+        LOGGER.info(f"[readdir] '{file[DF.PATH]}'")
+        files = self.db.get_files(bin=self.trashed, **{DF.PARENT_ID: file[DF.ID]})
 
         # List all entries and sort them by inode
         entries = []
-        for inode, db_file in db_files:
-            name = os.fsencode(db_file[DF.BASENAME])
-            stat = self.file2stat(inode, db_file)
+        for file in files:
+            name = os.fsencode(file[DF.BASENAME])
+            stat = self.file2stat(file)
             entries.append((name, stat))
         entries = sorted(entries, key=lambda row: row[1].st_ino)
 
