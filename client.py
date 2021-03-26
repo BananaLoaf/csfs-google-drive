@@ -3,16 +3,17 @@ import ssl
 import httplib2
 import socket
 from functools import wraps
-from typing import BinaryIO, Optional, Callable, Tuple, List
+from typing import *
+from typing import BinaryIO
 import threading
 
 from pathlib import Path
-from googleapiclient.discovery import build
+from googleapiclient.discovery import build, Resource
 import googleapiclient.errors
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload, HttpRequest
 from google.auth.exceptions import RefreshError, TransportError
 
 from CloudStorageFileSystem.logger import LOGGER
@@ -147,6 +148,10 @@ class DriveClient:
         """https://developers.google.com/drive/api/v3/reference/about"""
         response = self.service.about().get(fields="*").execute(num_retries=1)
         return response
+
+    def execute_from_json(self, json_request: str):
+        request = HttpRequest.from_json(json_request, http=self.service._http, postproc=HttpRequest.null_postproc)
+        request.execute(num_retries=1)
 
     # @is_connected
     # @lock

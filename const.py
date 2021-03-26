@@ -58,6 +58,11 @@ class DF:  # Database Fields
                      TARGET_ID: "TEXT",
                      TARGET_PATH: "TEXT"}
 
+    TYPE = "type"
+    PAYLOAD = "payload"
+    REQUEST_QUEUE_COLUMNS = {TYPE: "TEXT",
+                             PAYLOAD: "TEXT"}
+
     # STATUS = "status"
     # DJOBS_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
     #                  # MIME_TYPE: "TEXT NOT NULL",

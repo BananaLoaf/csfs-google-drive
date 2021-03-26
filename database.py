@@ -13,6 +13,10 @@ class DatabaseFile(DatabaseItem):
     _columns = DF.FILES_COLUMNS
 
 
+class DatabaseRequest(DatabaseItem):
+    _columns = DF.REQUEST_QUEUE_COLUMNS
+
+
 # class DatabaseDJob(DatabaseItem):
 #     _columns = DF.DJOBS_COLUMNS
 
@@ -21,6 +25,8 @@ class DriveDatabase(Database):
     drive_files_table = "drive_files"
     files_table = "files"
     bin_table = "bin"
+
+    request_queue_table = "request_queue"
     # djobs_table = "djobs"
 
     def __init__(self, *args, **kwargs):
@@ -34,28 +40,58 @@ class DriveDatabase(Database):
         self.create_table(self.files_table, headers=DF.FILES_COLUMNS, reset=True)
         self.create_table(self.bin_table, headers=DF.FILES_COLUMNS, reset=True)
 
+        self.create_table(self.request_queue_table, headers=DF.REQUEST_QUEUE_COLUMNS)
+
         # self.create_table(self.djobs_table, headers=DF.DJOBS_COLUMNS, reset=True)
         # self.create_index(self.djobs_table, DF.ID)
 
     ################################################################
-    # Files
-    def new_dfile(self, drive_file: DatabaseDriveFile):
+    # DFiles
+    def new_dfile(self, dfile: DatabaseDriveFile):
         # Add drive file
         query = f"INSERT OR REPLACE INTO '{self.drive_files_table}' " \
                 f"({', '.join(DF.DRIVE_FILES_COLUMNS.keys())}) " \
                 f"VALUES ({','.join('?' * len(DF.DRIVE_FILES_COLUMNS.keys()))})"
-        self._execute({query: drive_file.values})
+        self._execute({query: dfile.values})
 
-    def new_dfiles(self, drive_files: List[DatabaseDriveFile]):
+    def new_dfiles(self, dfiles: List[DatabaseDriveFile]):
         query = f"INSERT OR REPLACE INTO '{self.drive_files_table}' " \
                 f"({', '.join(DF.DRIVE_FILES_COLUMNS.keys())}) " \
                 f"VALUES ({', '.join('?' * len(DF.DRIVE_FILES_COLUMNS.keys()))})"
-        values = [file.values for file in drive_files]
+        values = [file.values for file in dfiles]
         self._executemany({query: values})
 
+    # @eval_kwargs(DatabaseDriveFile)
+    def get_dfile(self, **kwargs) -> Optional[DatabaseDriveFile]:
+        query = f"SELECT rowid,* FROM '{self.drive_files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
+        values = list(kwargs.values())
+
+        if item := self._execute_fetchone({query: values}):
+            file = DatabaseDriveFile.from_list(item[1:])
+            file.rowid = item[0]
+            return file
+        else:
+            return item
+
+    # @eval_kwargs(DatabaseFile)
+    def get_dfiles(self, **kwargs) -> List[DatabaseDriveFile]:
+        query = f"SELECT rowid,* FROM '{self.drive_files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
+        values = list(kwargs.values())
+        items = self._execute_fetchall({query: values})
+
+        files = []
+        for item in items:
+            file = DatabaseDriveFile.from_list(item[1:])
+            file.rowid = item[0]
+            files.append(file)
+
+        return files
+
+    ################################################################
+    # Files
     @lock
     # @handle_exceptions
-    def new_file_from_dfile(self, bin: bool, dfile: DatabaseDriveFile):
+    def new_file_from_dfile(self, dfile: DatabaseDriveFile, bin: bool):
         cursor = self.conn.cursor()
         table_name = self.bin_table if bin else self.files_table
 
@@ -95,8 +131,16 @@ class DriveDatabase(Database):
 
         return cursor.fetchone()[0], DatabaseFile.from_list(file_values)
 
+    def new_file(self, file: DatabaseFile, bin: bool = False) -> int:
+        # Add drive file
+        table_name = self.bin_table if bin else self.files_table
+        query = f"INSERT OR REPLACE INTO '{table_name}' " \
+                f"({', '.join(DF.FILES_COLUMNS.keys())}) " \
+                f"VALUES ({','.join('?' * len(DF.FILES_COLUMNS.keys()))})"
+        return self._execute_fetchone({query: file.values, f"SELECT last_insert_rowid() FROM '{table_name}'": None})[0]
+
     # @eval_kwargs(DatabaseFile)
-    def get_file(self, bin: bool, **kwargs) -> Optional[DatabaseFile]:
+    def get_file(self, bin: bool = False, **kwargs) -> Optional[DatabaseFile]:
         query = f"SELECT rowid,* FROM '{self.bin_table if bin else self.files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
         values = list(kwargs.values())
 
@@ -121,45 +165,26 @@ class DriveDatabase(Database):
 
         return files
 
-    # @eval_kwargs(DatabaseDriveFile)
-    def get_drive_file(self, **kwargs) -> Optional[DatabaseDriveFile]:
-        query = f"SELECT rowid,* FROM '{self.drive_files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
-        values = list(kwargs.values())
-
-        if item := self._execute_fetchone({query: values}):
-            file = DatabaseDriveFile.from_list(item[1:])
-            file.rowid = item[0]
-            return file
-        else:
-            return item
-
-    # @eval_kwargs(DatabaseFile)
-    def get_dfiles(self, **kwargs) -> List[DatabaseDriveFile]:
-        query = f"SELECT rowid,* FROM '{self.drive_files_table}' WHERE {' AND '.join([f'{key}=?' for key in kwargs.keys()])}"
-        values = list(kwargs.values())
-        items = self._execute_fetchall({query: values})
-
-        files = []
-        for item in items:
-            file = DatabaseDriveFile.from_list(item[1:])
-            file.rowid = item[0]
-            files.append(file)
-
-        return files
-
-    # def delete_file_children(self, id: str):
-    #     ids = [id]
-    #     while ids:
-    #         db_files = self.get_files(**{DF.PARENT_ID: ids[0]})
-    #         ids.pop(0)
-    #
-    #         for rowid, db_file in db_files:
-    #             ids.append(db_file[DF.ID])
-    #             self.delete_file(id=db_file[DF.ID])
-
     def delete_file(self, id: str):
         query = f"DELETE FROM '{self.drive_files_table}' WHERE id='{id}'"
-        self._execute(query)
+        self._execute({query: None})
+
+    ################################################################
+    # Queries
+    def new_request(self, request: DatabaseRequest):
+        query = f"INSERT OR REPLACE INTO '{self.request_queue_table}' " \
+                f"({', '.join(DF.REQUEST_QUEUE_COLUMNS.keys())}) " \
+                f"VALUES ({','.join('?' * len(DF.REQUEST_QUEUE_COLUMNS.keys()))})"
+        self._execute({query: request.values})
+
+    def delete_request(self, request: DatabaseRequest):
+        query = f"DELETE FROM '{self.request_queue_table}' WHERE {DF.TYPE}=? AND {DF.PAYLOAD}=?"
+        self._execute({query: request.values})
+
+    def get_all_requests(self) -> List[DatabaseRequest]:
+        q = f"SELECT * FROM '{self.request_queue_table}'"
+        items = self._execute_fetchall({q: None})
+        return [DatabaseRequest.from_list(row) for row in items]
 
     ################################################################
     # DJobs

@@ -76,9 +76,12 @@ class GoogleDriveProfile(Profile):
         mountpoint = Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT])
 
         ths = [
+            # ThreadHandler(
+            #     t=Thread(target=lambda: ops.download_loop()),
+            #     join=False),
             ThreadHandler(
-                t=Thread(target=lambda: ops.download_loop()),
-                join=False)
+                t=Thread(target=lambda: ops.request_queue()),
+                join=False),
         ]
 
         return ops, mountpoint, ths
