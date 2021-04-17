@@ -412,6 +412,23 @@ class DriveFileSystem(Operations):
         file[DF.FATE] = DF.RMDIR
         self.db.new_dfile(file)
 
+    async def unlink(self, inode_p: int, name: bytes, ctx: pyfuse3.RequestContext):
+        try:
+            file_p = self.db.get_dfile(**{ROWID: inode_p})
+        except ValueError:
+            raise FUSEFileNotFoundError(f"[unlink] (inode_p {inode_p}) does not exist")
+
+        name = os.fsdecode(name)
+        path = Path(file_p[DF.PATH], name)
+        try:
+            file = self.db.get_dfile(**{DF.PARENT_ID: file_p[DF.ID], DF.NAME: name})
+        except ValueError:
+            raise FUSEFileNotFoundError(f"[unlink] '{path}' does not exist")
+
+        LOGGER.info(f"[unlink] '{path}'")
+        file[DF.FATE] = DF.UNLINK
+        self.db.new_dfile(file)
+
     # async def symlink(self, inode_p: int, name: bytes, target_path: bytes, ctx: pyfuse3.RequestContext):
     #     # Check if target_path is absolute
     #     target_path = Path(os.fsdecode(target_path))
@@ -547,23 +564,6 @@ class DriveFileSystem(Operations):
     #         self.client.untrash_file(id=db_file[DF.ID])
     #     else:
     #         self.client.trash_file(id=db_file[DF.ID])
-    #
-    #
-    # async def unlink(self, inode_p: int, name: bytes, ctx: pyfuse3.RequestContext):
-    #     try:
-    #         inode_p, db_file_p = self.db.get_drive_file(**{ROWID: inode_p})
-    #     except ValueError:
-    #         raise FUSEFileNotFoundError(f"[unlink] (inode_p {inode_p}) does not exist")
-    #
-    #     name = os.fsdecode(name)
-    #     try:
-    #         inode, db_file = self.db.get_drive_file(**{DF.PARENT_ID: db_file_p[DF.ID], DF.NAME: name})
-    #     except ValueError:
-    #         raise FUSEFileNotFoundError(f"[unlink] (inode_p {inode_p})/'{name}' does not exist")
-    #
-    #     LOGGER.info(f"[unlink] (inode {inode}) '{name}'")
-    #     self._remove(db_file)
-    #     self.db.delete_file(id=db_file[DF.ID])
 
     ################################################################
     # File ops

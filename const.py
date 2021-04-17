@@ -47,11 +47,11 @@ class DF:  # Database Fields
                            TRASHED: "BOOLEAN NOT NULL"}
 
     RMDIR = "rmdir"
-    RM = "rm"
+    UNLINK = "unlink"
     MKDIR = "mkdir"
     UPL = "upl"
     DWN = "dwn"
-    FATES = [RMDIR, RM, MKDIR, DWN, UPL]
+    FATES = [RMDIR, UNLINK, MKDIR, DWN, UPL]
 
     # STATUS = "status"
     # DJOBS_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
