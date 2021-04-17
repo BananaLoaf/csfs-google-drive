@@ -1,6 +1,6 @@
 import json
 from typing import Tuple, List
-from threading import Thread
+from threading import Thread, Event
 
 from pathlib import Path
 import pyfuse3
@@ -59,7 +59,7 @@ class GoogleDriveProfile(Profile):
     def _remove(self):
         pass
 
-    def _start(self) -> Tuple[pyfuse3.Operations, Path, List[ThreadHandler]]:
+    def _start(self, stop_event: Event) -> Tuple[pyfuse3.Operations, Path, List[ThreadHandler]]:
         # Load credentials
         with self.profile_path.joinpath("credentials.json").open("r") as file:
             credentials = file.read()
@@ -76,7 +76,8 @@ class GoogleDriveProfile(Profile):
                               client=self.client,
                               bin=self.config[CF.MOUNT_SECTION][CF.TRASH],
                               mountpoint=Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT]),
-                              cache_path=self.cache_path)
+                              cache_path=self.cache_path,
+                              stop_event=stop_event)
 
         mountpoint = Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT])
 

@@ -46,12 +46,13 @@ class DF:  # Database Fields
                            MTIME: "INTEGER NOT NULL",
                            TRASHED: "BOOLEAN NOT NULL"}
 
+    HIDDEN = "hidden"
     RMDIR = "rmdir"
     UNLINK = "unlink"
     MKDIR = "mkdir"
     UPL = "upl"
     DWN = "dwn"
-    FATES = [RMDIR, UNLINK, MKDIR, DWN, UPL]
+    FATES = [RMDIR, UNLINK, MKDIR]
 
     # STATUS = "status"
     # DJOBS_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",

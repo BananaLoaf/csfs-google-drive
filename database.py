@@ -36,33 +36,37 @@ class DriveDatabase(Database):
     # DFiles
     @lock
     # @handle_exceptions
-    def new_dfile(self, dfile: DatabaseDriveFile) -> str:
+    def new_dfile(self, file: DatabaseDriveFile) -> Tuple[int, str]:
         # Add drive file
         cursor = self.conn.cursor()
 
-        if dfile[DF.ID] == AF.ROOT_ID:
-            dfile[DF.DIRNAME] = "/"
-            dfile[DF.BASENAME] = ""
-            dfile[DF.PATH] = "/"
+        if file[DF.ID] == AF.ROOT_ID:
+            file[DF.DIRNAME] = "/"
+            file[DF.BASENAME] = ""
+            file[DF.PATH] = "/"
 
         else:
-            cursor.execute(f"SELECT rowid,* FROM '{self.drive_files_table}' WHERE {DF.ID}=?", (dfile[DF.PARENT_ID], ))
+            cursor.execute(f"SELECT rowid,* FROM '{self.drive_files_table}' WHERE {DF.ID}=?", (file[DF.PARENT_ID],))
             if item := cursor.fetchone():
-                dfile_p = DatabaseDriveFile.from_list(item[1:])
-                dfile_p.rowid = item[0]
+                file_p = DatabaseDriveFile.from_list(item[1:])
+                file_p.rowid = item[0]
 
-                dfile[DF.DIRNAME] = dfile_p[DF.PATH]
-                dfile[DF.BASENAME] = dfile[DF.NAME]
-                dfile[DF.PATH] = os.path.join(dfile[DF.DIRNAME], dfile[DF.BASENAME])  # TODO filter doubles
+                file[DF.DIRNAME] = file_p[DF.PATH]
+                file[DF.BASENAME] = file[DF.NAME]
+                file[DF.PATH] = os.path.join(file[DF.DIRNAME], file[DF.BASENAME])  # TODO filter doubles
+
+            # Or
+            else:
+                pass  # What?
 
         query = f"INSERT OR REPLACE INTO '{self.drive_files_table}' " \
                 f"({', '.join(DF.DRIVE_FILES_COLUMNS.keys())}) " \
                 f"VALUES ({','.join('?' * len(DF.DRIVE_FILES_COLUMNS.keys()))})"
-        cursor.execute(query, dfile.values)
+        cursor.execute(query, file.values)
         self.conn.commit()
 
-        cursor.execute(f"SELECT {DF.PATH} FROM '{self.drive_files_table}' WHERE {DF.ID}=?", (dfile[DF.ID], ))
-        return cursor.fetchone()[0]
+        rowid = cursor.lastrowid
+        return rowid, file[DF.PATH]
 
     @eval_kwargs(DatabaseDriveFile)
     def get_dfile(self, **kwargs) -> Optional[DatabaseDriveFile]:

@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from datetime import timezone
 import hashlib
-import threading
+from threading import Event
 import stat
 import os
 import json
@@ -57,7 +57,7 @@ class FUSEReadOnly(FUSEErrorTemplate):
 
 ################################################################
 class DriveFileSystem(Operations):
-    def __init__(self, db: DriveDatabase, client: DriveClient, bin: bool, mountpoint: Path, cache_path: Path):
+    def __init__(self, db: DriveDatabase, client: DriveClient, bin: bool, mountpoint: Path, cache_path: Path, stop_event: Event):
         super().__init__()
 
         self.db = db
@@ -66,6 +66,8 @@ class DriveFileSystem(Operations):
 
         self.mountpoint = mountpoint
         self.cache_path = cache_path
+
+        self.stop_event = stop_event
 
     ################################################################
     # Helpers
@@ -202,9 +204,9 @@ class DriveFileSystem(Operations):
 
     def update_statfs(self):
         LOGGER.info("Starting statfs update thread")
-        while True:
+        while not self.stop_event.is_set():
             self._update_statfs()
-            time.sleep(60)
+            self.stop_event.wait(60)
 
     def _update_statfs(self):
         drive_info = self.client.about()
@@ -377,7 +379,10 @@ class DriveFileSystem(Operations):
             raise FUSEFileNotFoundError(f"[readdir] (inode {inode}) does not exist")
 
         LOGGER.info(f"[readdir] '{file[DF.PATH]}'")
-        files = self.db.get_dfiles(**{DF.PARENT_ID: file[DF.ID]})
+        if file[DF.ID] == AF.ROOT_ID:
+            files = self.db.get_dfiles(**{DF.PARENT_ID: file[DF.ID]})
+        else:
+            files = self.db.get_dfiles(**{DF.DIRNAME: file[DF.PATH]})
 
         # List all entries and sort them by inode
         entries = []
@@ -404,7 +409,7 @@ class DriveFileSystem(Operations):
         name = os.fsdecode(name)
         path = Path(file_p[DF.PATH], name)
         try:
-            file = self.db.get_dfile(**{DF.PARENT_ID: file_p[DF.ID], DF.NAME: name})
+            file = self.db.get_dfile(**{DF.DIRNAME: file_p[DF.PATH], DF.BASENAME: name})
         except ValueError:
             raise FUSEFileNotFoundError(f"[rmdir] '{path}' does not exist")
 
@@ -421,13 +426,49 @@ class DriveFileSystem(Operations):
         name = os.fsdecode(name)
         path = Path(file_p[DF.PATH], name)
         try:
-            file = self.db.get_dfile(**{DF.PARENT_ID: file_p[DF.ID], DF.NAME: name})
+            file = self.db.get_dfile(**{DF.DIRNAME: file_p[DF.PATH], DF.BASENAME: name})
         except ValueError:
             raise FUSEFileNotFoundError(f"[unlink] '{path}' does not exist")
 
         LOGGER.info(f"[unlink] '{path}'")
         file[DF.FATE] = DF.UNLINK
         self.db.new_dfile(file)
+
+    async def mkdir(self, inode_p: int, name: bytes, mode: int, ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
+        # If parent exists
+        if not (file_p := self.db.get_dfile(**{ROWID: inode_p})):
+            raise FUSEFileNotFoundError(f"[mkdir] (inode_p {inode_p}) does not exist")
+
+        # If target does not exist
+        name = os.fsdecode(name)
+        self.try2ignore(name)
+        if file := self.db.get_dfile(**{DF.PARENT_ID: file_p[DF.ID], DF.BASENAME: name}):
+            raise FUSEFileExistsError(f"[mkdir] '{file[DF.PATH]}' already exists")
+
+        path = Path(file_p[DF.PATH], name)
+        LOGGER.info(f"[mkdir] '{path}'")
+
+        # Add dummy file
+        now = int(datetime.now().replace(tzinfo=timezone.utc).timestamp())
+        dummy_file = DatabaseDriveFile.from_kwargs(**{
+            DF.ID: None,
+            DF.PARENT_ID: file_p[DF.ID],
+            DF.FATE: DF.MKDIR,
+            DF.NAME: name,
+            DF.DIRNAME: file_p[DF.PATH],
+            DF.BASENAME: name,
+            DF.PATH: str(path),
+            DF.FILE_SIZE: 0,
+            DF.ATIME: now,
+            DF.CTIME: now,
+            DF.MTIME: now,
+            DF.MIME_TYPE: AF.FOLDER_MIME_TYPE,
+            DF.TARGET_ID: None,
+            DF.TRASHED: self.trashed,
+            DF.MD5: None
+        })
+        dummy_file.rowid, _ = self.db.new_dfile(dummy_file)
+        return self.file2stat(dummy_file)
 
     # async def symlink(self, inode_p: int, name: bytes, target_path: bytes, ctx: pyfuse3.RequestContext):
     #     # Check if target_path is absolute
@@ -503,51 +544,6 @@ class DriveFileSystem(Operations):
     #                                            old_parent_id=db_file_old[DF.PARENT_ID],
     #                                            new_parent_id=db_file_p_new[DF.ID])
     #         self.db.new_drive_file(self.drive_file2db_drive_file(drive_file))
-    #
-    # async def mkdir(self, inode_p: int, name: bytes, mode: int, ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
-    #     # No new dirs in trash
-    #     if self.trashed:
-    #         raise FUSEIOError
-    #
-    #     # If parent exists
-    #     if not (file_p := self.db.get_file(**{ROWID: inode_p})):
-    #         raise FUSEFileNotFoundError(f"[mkdir] (inode_p {inode_p}) does not exist")
-    #
-    #     # If target does not exist
-    #     name = os.fsdecode(name)
-    #     self.try2ignore(name)
-    #     if file := self.db.get_file(**{DF.PARENT_ID: file_p[DF.ID], DF.BASENAME: name}):
-    #         raise FUSEFileExistsError(f"[mkdir] '{file[DF.PATH]}' already exists")
-    #
-    #     path = Path(file_p[DF.PATH], name)
-    #     LOGGER.info(f"[mkdir] '{path}'")
-    #
-    #     # Queue request
-    #     request = DatabaseRequest.from_kwargs(**{
-    #         DF.TYPE: self._mkdir.__name__[1:],
-    #         DF.PAYLOAD: json.dumps({"dirname": file_p[DF.PATH], "basename": name})
-    #     })
-    #     self.db.new_request(request)
-    #
-    #     # Add dummy file
-    #     now = int(datetime.now().replace(tzinfo=timezone.utc).timestamp())
-    #     dummy_file = DatabaseFile.from_kwargs(**{
-    #         DF.ID: None,
-    #         DF.PARENT_ID: file_p[DF.ID],
-    #         DF.DIRNAME: file_p[DF.PATH],
-    #         DF.BASENAME: name,
-    #         DF.PATH: str(path),
-    #         DF.FILE_SIZE: 0,
-    #         DF.ATIME: now,
-    #         DF.CTIME: now,
-    #         DF.MTIME: now,
-    #         DF.IS_DIR: True,
-    #         DF.IS_LINK: False,
-    #         DF.TARGET_ID: None,
-    #         DF.TARGET_PATH: None
-    #     })
-    #     dummy_file.rowid = self.db.new_file(dummy_file)
-    #     return self.file2stat(dummy_file)
     #
     # def _mkdir(self, dirname: str, basename: str):
     #     if not (file_p := self.db.get_file(bin=False, **{DF.PATH: dirname})):
