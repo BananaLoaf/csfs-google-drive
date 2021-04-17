@@ -17,7 +17,11 @@ class FF:  # File System Fields
 class DF:  # Database Fields
     ID = "id"
     PARENT_ID = "parent_id"
+    FATE = "fate"
     NAME = "name"
+    DIRNAME = "dirname"
+    BASENAME = "basename"
+    PATH = "path"
     FILE_SIZE = "file_size"
     ATIME = "atime"
     CTIME = "ctime"
@@ -26,9 +30,13 @@ class DF:  # Database Fields
     TARGET_ID = "target_id"
     TRASHED = "trashed"
     MD5 = "md5"
-    DRIVE_FILES_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",
+    DRIVE_FILES_COLUMNS = {ID: "TEXT",
                            PARENT_ID: "TEXT",
+                           FATE: "TEXT",
                            NAME: "TEXT NOT NULL",
+                           DIRNAME: "TEXT",
+                           BASENAME: "TEXT",
+                           PATH: "TEXT UNIQUE",
                            FILE_SIZE: "INTEGER NOT NULL",
                            MD5: "TEXT",
                            MIME_TYPE: "TEXT NOT NULL",
@@ -38,30 +46,12 @@ class DF:  # Database Fields
                            MTIME: "INTEGER NOT NULL",
                            TRASHED: "BOOLEAN NOT NULL"}
 
-    DIRNAME = "dirname"
-    BASENAME = "basename"
-    PATH = "path"
-    IS_DIR = "is_dir"
-    IS_LINK = "is_link"
-    TARGET_PATH = "target_path"
-    FILES_COLUMNS = {ID: "TEXT",
-                     PARENT_ID: "TEXT",
-                     DIRNAME: "TEXT",
-                     BASENAME: "TEXT",
-                     PATH: "TEXT UNIQUE",
-                     FILE_SIZE: "INTEGER",
-                     ATIME: "INTEGER NOT NULL",
-                     CTIME: "INTEGER NOT NULL",
-                     MTIME: "INTEGER NOT NULL",
-                     IS_DIR: "BOOLEAN NOT NULL",
-                     IS_LINK: "BOOLEAN NOT NULL",
-                     TARGET_ID: "TEXT",
-                     TARGET_PATH: "TEXT"}
-
-    TYPE = "type"
-    PAYLOAD = "payload"
-    REQUEST_QUEUE_COLUMNS = {TYPE: "TEXT",
-                             PAYLOAD: "TEXT"}
+    RMDIR = "rmdir"
+    RM = "rm"
+    MKDIR = "mkdir"
+    UPL = "upl"
+    DWN = "dwn"
+    FATES = [RMDIR, RM, MKDIR, DWN, UPL]
 
     # STATUS = "status"
     # DJOBS_COLUMNS = {ID: "TEXT NOT NULL UNIQUE",

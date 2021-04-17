@@ -4,6 +4,7 @@ from threading import Thread
 
 from pathlib import Path
 import pyfuse3
+import oauthlib.oauth2
 
 from CloudStorageFileSystem.utils.profile import Profile, ThreadHandler
 from CloudStorageFileSystem.utils.exceptions import *
@@ -47,9 +48,13 @@ class GoogleDriveProfile(Profile):
 
     ################################################################
     def _create(self):
-        credentials = self.client.auth()
-        with self.profile_path.joinpath("credentials.json").open("w") as file:
-            file.write(credentials)
+        try:
+            credentials = self.client.auth()
+            with self.profile_path.joinpath("credentials.json").open("w") as file:
+                file.write(credentials)
+
+        except oauthlib.oauth2.rfc6749.errors.AccessDeniedError:
+            raise ProfileCreationError("Access denied")
 
     def _remove(self):
         pass
@@ -80,7 +85,7 @@ class GoogleDriveProfile(Profile):
             #     t=Thread(target=lambda: ops.download_loop()),
             #     join=False),
             ThreadHandler(
-                t=Thread(target=lambda: ops.request_queue()),
+                t=Thread(target=lambda: ops.update_statfs()),
                 join=False),
         ]
 
