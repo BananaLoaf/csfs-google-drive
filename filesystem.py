@@ -17,7 +17,7 @@ from CloudStorageFileSystem.utils.operations import flag2mode
 from CloudStorageFileSystem.utils.database import ROWID
 from CloudStorageFileSystem.logger import LOGGER
 from .client import DriveClient, DriveFile
-from .database import DriveDatabase, DatabaseDriveFile, DatabaseFile, DatabaseRequest  # , DatabaseDJob
+from .database import DriveDatabase, DatabaseDriveFile  # , DatabaseDJob
 from .const import DF, AF, FF
 
 
