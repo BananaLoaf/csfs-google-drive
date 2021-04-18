@@ -28,6 +28,7 @@ class DF:  # Database Fields
     MTIME = "mtime"
     MIME_TYPE = "mime_type"
     TARGET_ID = "target_id"
+    TARGET_PATH = "target_path"
     TRASHED = "trashed"
     MD5 = "md5"
     DRIVE_FILES_COLUMNS = {ID: "TEXT",
@@ -41,12 +42,13 @@ class DF:  # Database Fields
                            MD5: "TEXT",
                            MIME_TYPE: "TEXT NOT NULL",
                            TARGET_ID: "TEXT",
+                           TARGET_PATH: "TEXT",
                            ATIME: "INTEGER NOT NULL",
                            CTIME: "INTEGER NOT NULL",
                            MTIME: "INTEGER NOT NULL",
                            TRASHED: "BOOLEAN NOT NULL"}
 
-    HIDDEN = "hidden"
+    BANISHED = "banished"
     RMDIR = "rmdir"
     UNLINK = "unlink"
     MKDIR = "mkdir"

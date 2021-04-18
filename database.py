@@ -59,6 +59,11 @@ class DriveDatabase(Database):
             else:
                 pass  # What?
 
+        if file[DF.TARGET_ID] is not None:
+            cursor.execute(f"SELECT {DF.PATH} FROM '{self.drive_files_table}' WHERE {DF.ID}=?", (file[DF.TARGET_ID],))
+            if item := cursor.fetchone():
+                file[DF.TARGET_PATH] = item[0]
+
         query = f"INSERT OR REPLACE INTO '{self.drive_files_table}' " \
                 f"({', '.join(DF.DRIVE_FILES_COLUMNS.keys())}) " \
                 f"VALUES ({','.join('?' * len(DF.DRIVE_FILES_COLUMNS.keys()))})"

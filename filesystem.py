@@ -149,6 +149,7 @@ class DriveFileSystem(Operations):
             DF.MTIME: mtime,
             DF.MIME_TYPE: mime_type,
             DF.TARGET_ID: target_id,
+            DF.TARGET_PATH: None,
             DF.TRASHED: trashed,
             DF.MD5: md5
         })
@@ -345,6 +346,8 @@ class DriveFileSystem(Operations):
         if not (file := self.db.get_dfile(**{DF.DIRNAME: file_p[DF.PATH], DF.BASENAME: name})):
             path = Path(file_p[DF.PATH], name)
             raise FUSEFileNotFoundError(f"[lookup] '{path}' does not exist")
+        elif file[DF.FATE] == DF.BANISHED:
+            raise FUSEFileNotFoundError(f"[lookup] '{file[DF.PATH]}' is banished")
 
         return self.file2stat(file)
 
@@ -360,7 +363,7 @@ class DriveFileSystem(Operations):
             raise FUSEFileNotFoundError(f"[readlink] (inode {inode}) does not exist")
 
         # Handle link target
-        if file_t := self.db.get_dfile(**{DF.ID: file[DF.TARGET_ID]}):
+        if file_t := self.db.get_dfile(**{DF.PATH: file[DF.TARGET_PATH]}):
             target_path = Path(file_t[DF.PATH])
         # Invalid link, point to itself
         else:
@@ -386,6 +389,9 @@ class DriveFileSystem(Operations):
         # List all entries and sort them by inode
         entries = []
         for file in files:
+            if file[DF.FATE] == DF.BANISHED:
+                continue
+
             name = os.fsencode(file[DF.BASENAME])
             stat = self.file2stat(file)
             entries.append((name, stat))
@@ -414,23 +420,6 @@ class DriveFileSystem(Operations):
 
         LOGGER.info(f"[rmdir] '{path}'")
         file[DF.FATE] = DF.RMDIR
-        self.db.new_dfile(file)
-
-    async def unlink(self, inode_p: int, name: bytes, ctx: pyfuse3.RequestContext):
-        try:
-            file_p = self.db.get_dfile(**{ROWID: inode_p})
-        except ValueError:
-            raise FUSEFileNotFoundError(f"[unlink] (inode_p {inode_p}) does not exist")
-
-        name = os.fsdecode(name)
-        path = Path(file_p[DF.PATH], name)
-        try:
-            file = self.db.get_dfile(**{DF.DIRNAME: file_p[DF.PATH], DF.BASENAME: name})
-        except ValueError:
-            raise FUSEFileNotFoundError(f"[unlink] '{path}' does not exist")
-
-        LOGGER.info(f"[unlink] '{path}'")
-        file[DF.FATE] = DF.UNLINK
         self.db.new_dfile(file)
 
     async def mkdir(self, inode_p: int, name: bytes, mode: int, ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
@@ -463,11 +452,29 @@ class DriveFileSystem(Operations):
             DF.MTIME: now,
             DF.MIME_TYPE: AF.FOLDER_MIME_TYPE,
             DF.TARGET_ID: None,
+            DF.TARGET_PATH: None,
             DF.TRASHED: self.trashed,
             DF.MD5: None
         })
         dummy_file.rowid, _ = self.db.new_dfile(dummy_file)
         return self.file2stat(dummy_file)
+
+    async def unlink(self, inode_p: int, name: bytes, ctx: pyfuse3.RequestContext):
+        try:
+            file_p = self.db.get_dfile(**{ROWID: inode_p})
+        except ValueError:
+            raise FUSEFileNotFoundError(f"[unlink] (inode_p {inode_p}) does not exist")
+
+        name = os.fsdecode(name)
+        path = Path(file_p[DF.PATH], name)
+        try:
+            file = self.db.get_dfile(**{DF.DIRNAME: file_p[DF.PATH], DF.BASENAME: name})
+        except ValueError:
+            raise FUSEFileNotFoundError(f"[unlink] '{path}' does not exist")
+
+        LOGGER.info(f"[unlink] '{path}'")
+        file[DF.FATE] = DF.UNLINK
+        self.db.new_dfile(file)
 
     # async def symlink(self, inode_p: int, name: bytes, target_path: bytes, ctx: pyfuse3.RequestContext):
     #     # Check if target_path is absolute
