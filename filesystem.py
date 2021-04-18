@@ -57,7 +57,7 @@ class FUSEReadOnly(FUSEErrorTemplate):
 
 ################################################################
 class DriveFileSystem(Operations):
-    def __init__(self, db: DriveDatabase, client: DriveClient, bin: bool, mountpoint: Path, cache_path: Path, stop_event: Event):
+    def __init__(self, db: DriveDatabase, client: DriveClient, bin: bool, mountpoint: Path, cache_path: Path):
         super().__init__()
 
         self.db = db
@@ -66,8 +66,6 @@ class DriveFileSystem(Operations):
 
         self.mountpoint = mountpoint
         self.cache_path = cache_path
-
-        self.stop_event = stop_event
 
     ################################################################
     # Helpers
@@ -202,11 +200,12 @@ class DriveFileSystem(Operations):
         for dfile in link_dfiles:
             self.db.new_dfile(dfile)
 
-    def update_statfs(self):
+    def update_statfs(self, stop_event: Event):
+        """stop_event is from the thread"""
         LOGGER.info("Starting statfs update thread")
-        while not self.stop_event.is_set():
+        while not stop_event.is_set():
             self._update_statfs()
-            self.stop_event.wait(60)
+            stop_event.wait(60)
 
     def _update_statfs(self):
         drive_info = self.client.about()

@@ -6,7 +6,7 @@ from pathlib import Path
 import pyfuse3
 import oauthlib.oauth2
 
-from CloudStorageFileSystem.utils.profile import Profile, ThreadHandler
+from CloudStorageFileSystem.utils.profile import Profile, ManagedThread
 from CloudStorageFileSystem.utils.exceptions import *
 from .client import DriveClient
 from .database import DriveDatabase
@@ -59,7 +59,7 @@ class GoogleDriveProfile(Profile):
     def _remove(self):
         pass
 
-    def _start(self, stop_event: Event) -> Tuple[pyfuse3.Operations, Path, List[ThreadHandler]]:
+    def _start(self) -> Tuple[pyfuse3.Operations, Path, List[ManagedThread]]:
         # Load credentials
         with self.profile_path.joinpath("credentials.json").open("r") as file:
             credentials = file.read()
@@ -76,8 +76,7 @@ class GoogleDriveProfile(Profile):
                               client=self.client,
                               bin=self.config[CF.MOUNT_SECTION][CF.TRASH],
                               mountpoint=Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT]),
-                              cache_path=self.cache_path,
-                              stop_event=stop_event)
+                              cache_path=self.cache_path)
 
         mountpoint = Path(self.config[CF.MOUNT_SECTION][CF.MOUNTPOINT])
 
@@ -85,9 +84,7 @@ class GoogleDriveProfile(Profile):
             # ThreadHandler(
             #     t=Thread(target=lambda: ops.download_loop()),
             #     join=False),
-            ThreadHandler(
-                t=Thread(target=lambda: ops.update_statfs()),
-                join=False),
+            ManagedThread(if_join=False, target=ops.update_statfs)
         ]
 
         return ops, mountpoint, ths
